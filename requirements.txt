@@ -4,3 +4,8 @@
 streamlit==1.37.1
 anthropic==0.34.2
 python-dotenv==1.0.1
+paperclip
+pandas
+qrcode
+unidecode
+crcmod
