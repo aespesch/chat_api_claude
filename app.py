@@ -139,7 +139,7 @@ for m in st.session_state.msgs:
 files = st.file_uploader(
     "📎 Attach files", 
     accept_multiple_files=True, 
-    type=['png','jpg','jpeg','txt','py','csv','md','json']
+    type=['png','jpg','jpeg','txt','py','csv','md','json','cfg']
 )
 
 # Chat input
