@@ -1,0 +1,6 @@
+# Claude API Streamlit Requirements
+# Python 3.12.7 compatible
+
+streamlit==1.37.1
+anthropic==0.34.2
+python-dotenv==1.0.1

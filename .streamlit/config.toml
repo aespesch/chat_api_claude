@@ -1,0 +1,58 @@
+# Streamlit Configuration File
+# Place this file in .streamlit/config.toml
+
+[theme]
+# Primary color for interactive elements
+primaryColor = "#FF6B6B"
+
+# Background color for the main content area
+backgroundColor = "#FFFFFF"
+
+# Background color for sidebar
+secondaryBackgroundColor = "#F0F2F6"
+
+# Color for text
+textColor = "#262730"
+
+# Font family
+font = "sans serif"
+
+[server]
+# Maximum upload size (in MB)
+maxUploadSize = 25
+
+# Maximum message size (in MB)
+maxMessageSize = 50
+
+# Enable CORS protection
+enableCORS = true
+
+# Enable XSRF protection
+enableXsrfProtection = true
+
+# Port
+port = 8501
+
+[browser]
+# Automatically open browser when running
+serverAddress = "localhost"
+
+# Tab title
+gatherUsageStats = false
+
+[runner]
+# Magic commands
+magicEnabled = true
+
+# Install packages automatically
+installTracer = false
+
+[client]
+# Show error details
+showErrorDetails = true
+
+# Caching
+caching = true
+
+# Display tooltips
+displayEnabled = true
