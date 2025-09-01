@@ -108,7 +108,7 @@ with st.sidebar:
 
     # Parameters
     temp = st.slider("Temperature", 0.0, 1.0, 0.7, 0.1)
-    max_t = st.slider("Max Tokens", 100, 4000, 2000, 100)
+    max_t = st.slider("Max Tokens", 100, 4000, 4000, 100)
 
     # Buttons
     col1, col2 = st.columns(2)
