@@ -18,13 +18,13 @@ class ClaudeAPI:
         # Primeiro verifica se st.secrets está disponível
         if hasattr(st, 'secrets') and len(st.secrets) > 0:
             try:
-                api_key = st.secrets.get("KEY") or st.secrets.get("ANTHROPIC_API_KEY")
+                api_key = st.secrets.get("KEY")
             except Exception:
                 pass
 
         # Se não conseguiu do Streamlit, tenta variável de ambiente
         if not api_key:
-            api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("KEY")
+            api_key = os.getenv("KEY")
 
         # Se não conseguiu, tenta do arquivo local
         if not api_key:
@@ -34,7 +34,7 @@ class ClaudeAPI:
 
                 if secrets_path.exists():
                     secrets = toml.load(secrets_path)
-                    api_key = secrets.get("KEY") or secrets.get("ANTHROPIC_API_KEY")
+                    api_key = secrets.get("KEY")
             except Exception as e:
                 st.warning(f"Could not load local secrets: {e}")
 
@@ -107,7 +107,7 @@ with st.sidebar:
     )
 
     # Parameters
-    temp = st.slider("Temperature", 0.0, 1.0, 0.7, 0.1)
+    temp = st.slider("Temperature", 0.0, 1.0, 0.5, 0.1)
     max_t = st.slider("Max Tokens", 100, 4000, 4000, 100)
 
     # Buttons
