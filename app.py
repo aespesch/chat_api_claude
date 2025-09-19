@@ -52,6 +52,9 @@ class ClaudeAPI:
     def send_message(self, msg, model, temp=0.7, max_t=2000, hist=None, files=None):
         if not self.client: 
             return "❌ API key not configured"
+        
+        # Debug: mostrar qual modelo está sendo solicitado
+        st.info(f"🔍 Requesting model: {model}")
 
         content = [{"type": "text", "text": msg}]
 
@@ -85,7 +88,14 @@ class ClaudeAPI:
                 temperature=temp, 
                 messages=msgs
             )
+
+            # Debug: verificar metadados da resposta
+            if hasattr(response, 'model'):
+                st.info(f"✅ Response from model: {response.model}")
+
             return response.content[0].text
+        except anthropic.BadRequestError as e:
+            return f"❌ Bad Request: {str(e)} - Model might not exist or be accessible"
         except Exception as e: 
             return f"❌ Error: {str(e)}"
 
