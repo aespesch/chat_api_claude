@@ -70,11 +70,13 @@ class ClaudeAPI:
                                 "data": base64.b64encode(f.read()).decode()
                             }
                         })
-                    elif f.name.endswith(('.txt','.py','.csv','.md','.json')):
+                    elif f.name.endswith(('.txt','.py','.csv','.md','.json','.php','.cfg')):
                         text_content = f.read().decode('utf-8', errors='ignore')
+                        # Determinar a linguagem para syntax highlighting
+                        lang = 'php' if f.name.endswith('.php') else ''
                         content.append({
                             "type": "text", 
-                            "text": f"\n📄 {f.name}:\n```\n{text_content}\n```"
+                            "text": f"\n📄 {f.name}:\n```{lang}\n{text_content}\n```"
                         })
                 except Exception as e:
                     st.warning(f"Could not process file {f.name}: {e}")
@@ -149,7 +151,7 @@ for m in st.session_state.msgs:
 files = st.file_uploader(
     "📎 Attach files", 
     accept_multiple_files=True, 
-    type=['png','jpg','jpeg','txt','py','csv','md','json','cfg']
+    type=['png','jpg','jpeg','txt','py','csv','md','json','cfg','php']
 )
 
 # Chat input
