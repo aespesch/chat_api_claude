@@ -9,7 +9,7 @@ class ClaudeAPI:
         "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5 (Mais Inteligente para Agentes e Codificação)",
         "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (Mais Rápido, Inteligência Próxima à Fronteira)",
         "claude-opus-4-1-20250805": "Claude Opus 4.1 (Excepcional para Raciocínio Especializado)",
-        
+
         # Modelos Legados (Ainda Disponíveis)
         "claude-sonnet-4-20250514": "Claude Sonnet 4 (Legado)",
         "claude-3-7-sonnet-20250219": "Claude 3.7 Sonnet (Legado)",
@@ -18,6 +18,22 @@ class ClaudeAPI:
         "claude-3-haiku-20240307": "Claude 3 Haiku (Legado)",
     }
 
+    # Definir limites máximos de tokens por modelo
+    MODEL_MAX_TOKENS = {
+        "claude-sonnet-4-5-20250929": 64000,
+        "claude-haiku-4-5-20251001": 64000,
+        "claude-opus-4-1-20250805": 64000,
+        "claude-sonnet-4-20250514": 8192,
+        "claude-3-7-sonnet-20250219": 8192,
+        "claude-opus-4-20250514": 16384,
+        "claude-3-5-haiku-20241022": 8192,
+        "claude-3-haiku-20240307": 4096,
+    }
+
+    @classmethod
+    def get_max_tokens(cls, model):
+        """Retorna o limite máximo de tokens para um modelo específico"""
+        return cls.MODEL_MAX_TOKENS.get(model, 4000)
 
     def __init__(self):
         api_key = None
@@ -59,7 +75,7 @@ class ClaudeAPI:
     def send_message(self, msg, model, temp=0.7, max_t=2000, hist=None, files=None):
         if not self.client: 
             return "❌ API key not configured"
-        
+
         # Debug: mostrar qual modelo está sendo solicitado
         st.info(f"🔍 Requesting model: {model}")
 
@@ -118,6 +134,8 @@ if 'msgs' not in st.session_state:
     st.session_state.msgs = []
 if 'api' not in st.session_state: 
     st.session_state.api = ClaudeAPI()
+if 'selected_model' not in st.session_state:
+    st.session_state.selected_model = list(ClaudeAPI.MODELS.keys())[0]
 
 # Sidebar
 with st.sidebar:
@@ -127,12 +145,30 @@ with st.sidebar:
     model = st.selectbox(
         "Model", 
         list(ClaudeAPI.MODELS.keys()), 
-        format_func=lambda x: ClaudeAPI.MODELS[x]
+        format_func=lambda x: ClaudeAPI.MODELS[x],
+        key='model_selector'
     )
+
+    # Atualizar modelo selecionado no session state
+    if model != st.session_state.selected_model:
+        st.session_state.selected_model = model
+        st.rerun()
+
+    # Obter limite máximo para o modelo selecionado
+    max_tokens_limit = ClaudeAPI.get_max_tokens(model)
+
+    # Mostrar informação sobre o limite
+    st.info(f"📊 Max tokens for this model: {max_tokens_limit:,}")
 
     # Parameters
     temp = st.slider("Temperature", 0.0, 1.0, 0.5, 0.1)
-    max_t = st.slider("Max Tokens", 100, 4000, 4000, 100)
+    max_t = st.slider(
+        "Max Tokens", 
+        100, 
+        max_tokens_limit, 
+        min(4000, max_tokens_limit),  # Valor padrão
+        100
+    )
 
     # Buttons
     col1, col2 = st.columns(2)
