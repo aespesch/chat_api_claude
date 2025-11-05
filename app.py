@@ -5,12 +5,19 @@ st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
 class ClaudeAPI:
     MODELS = {
-        "claude-opus-4-1-20250805": "Claude Opus 4.1 (Most Advanced)",
-        "claude-3-opus-20240229": "Claude 3 Opus (Most Capable)",
-        "claude-3-5-sonnet-20241022": "Claude 3.5 Sonnet (Balanced)",
-        "claude-3-sonnet-20240229": "Claude 3 Sonnet",
-        "claude-3-haiku-20240307": "Claude 3 Haiku (Fastest)"
+        # Modelos Mais Recentes e Recomendados (Claude 4.5)
+        "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5 (Mais Inteligente para Agentes e Codificação)",
+        "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (Mais Rápido, Inteligência Próxima à Fronteira)",
+        "claude-opus-4-1-20250805": "Claude Opus 4.1 (Excepcional para Raciocínio Especializado)",
+        
+        # Modelos Legados (Ainda Disponíveis)
+        "claude-sonnet-4-20250514": "Claude Sonnet 4 (Legado)",
+        "claude-3-7-sonnet-20250219": "Claude 3.7 Sonnet (Legado)",
+        "claude-opus-4-20250514": "Claude Opus 4 (Legado)",
+        "claude-3-5-haiku-20241022": "Claude 3.5 Haiku (Legado)",
+        "claude-3-haiku-20240307": "Claude 3 Haiku (Legado)",
     }
+
 
     def __init__(self):
         api_key = None
@@ -70,11 +77,18 @@ class ClaudeAPI:
                                 "data": base64.b64encode(f.read()).decode()
                             }
                         })
-                    elif f.name.endswith(('.txt','.py','.csv','.md','.json')):
+                    elif f.name.endswith(('.txt','.py','.csv','.md','.json','.php','.cfg','.sql')):
                         text_content = f.read().decode('utf-8', errors='ignore')
+                        # Determinar a linguagem para syntax highlighting
+                        if f.name.endswith('.php'):
+                            lang = 'php'
+                        elif f.name.endswith('.sql'):
+                            lang = 'sql'
+                        else:
+                            lang = ''
                         content.append({
                             "type": "text", 
-                            "text": f"\n📄 {f.name}:\n```\n{text_content}\n```"
+                            "text": f"\n📄 {f.name}:\n```{lang}\n{text_content}\n```"
                         })
                 except Exception as e:
                     st.warning(f"Could not process file {f.name}: {e}")
@@ -149,7 +163,7 @@ for m in st.session_state.msgs:
 files = st.file_uploader(
     "📎 Attach files", 
     accept_multiple_files=True, 
-    type=['png','jpg','jpeg','txt','py','csv','md','json','cfg']
+    type=['png','jpg','jpeg','txt','py','csv','md','json','cfg','php','sql']
 )
 
 # Chat input
