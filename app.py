@@ -66,18 +66,16 @@ class ClaudeAPI:
             self.client = None
         else:
             try:
-                # Inicialização simplificada sem parâmetros problemáticos
                 self.client = anthropic.Anthropic(api_key=api_key)
             except Exception as e:
                 st.error(f"❌ Error initializing Claude API: {str(e)}")
                 self.client = None
 
-    def send_message(self, msg, model, temp=0.7, max_t=2000, hist=None, files=None):
+    def send_message_stream(self, msg, model, temp=0.7, max_t=2000, hist=None, files=None):
+        """Versão com streaming que retorna um generator"""
         if not self.client: 
-            return "❌ API key not configured"
-
-        # Debug: mostrar qual modelo está sendo solicitado
-        st.info(f"🔍 Requesting model: {model}")
+            yield "❌ API key not configured"
+            return
 
         content = [{"type": "text", "text": msg}]
 
@@ -95,7 +93,6 @@ class ClaudeAPI:
                         })
                     elif f.name.endswith(('.txt','.py','.csv','.md','.json','.php','.cfg','.sql')):
                         text_content = f.read().decode('utf-8', errors='ignore')
-                        # Determinar a linguagem para syntax highlighting
                         if f.name.endswith('.php'):
                             lang = 'php'
                         elif f.name.endswith('.sql'):
@@ -112,22 +109,20 @@ class ClaudeAPI:
         msgs = (hist or []) + [{"role": "user", "content": content}]
 
         try: 
-            response = self.client.messages.create(
+            # Usar stream=True para habilitar streaming
+            with self.client.messages.stream(
                 model=model, 
                 max_tokens=max_t, 
                 temperature=temp, 
                 messages=msgs
-            )
+            ) as stream:
+                for text in stream.text_stream:
+                    yield text
 
-            # Debug: verificar metadados da resposta
-            if hasattr(response, 'model'):
-                st.info(f"✅ Response from model: {response.model}")
-
-            return response.content[0].text
         except anthropic.BadRequestError as e:
-            return f"❌ Bad Request: {str(e)} - Model might not exist or be accessible"
+            yield f"❌ Bad Request: {str(e)} - Model might not exist or be accessible"
         except Exception as e: 
-            return f"❌ Error: {str(e)}"
+            yield f"❌ Error: {str(e)}"
 
 # Initialize session state
 if 'msgs' not in st.session_state: 
@@ -166,9 +161,13 @@ with st.sidebar:
         "Max Tokens", 
         100, 
         max_tokens_limit, 
-        min(4000, max_tokens_limit),  # Valor padrão
+        min(8000, max_tokens_limit),  # Valor padrão aumentado
         100
     )
+
+    # Toggle para streaming
+    use_streaming = st.checkbox("🔄 Enable Streaming", value=True, 
+                                help="Ver resposta em tempo real (recomendado para respostas longas)")
 
     # Buttons
     col1, col2 = st.columns(2)
@@ -210,17 +209,36 @@ if prompt := st.chat_input("Type your message..."):
 
     # Get and display assistant response
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            # Prepare history for API
-            history = [
-                {"role": m["role"], "content": m["content"]} 
-                for m in st.session_state.msgs[:-1]
-            ]
+        # Prepare history for API
+        history = [
+            {"role": m["role"], "content": m["content"]} 
+            for m in st.session_state.msgs[:-1]
+        ]
 
-            # Send message
-            resp = st.session_state.api.send_message(
+        if use_streaming:
+            # Streaming mode - mostra resposta em tempo real
+            message_placeholder = st.empty()
+            full_response = ""
+
+            for chunk in st.session_state.api.send_message_stream(
                 prompt, model, temp, max_t, history, files
-            )
+            ):
+                full_response += chunk
+                message_placeholder.markdown(full_response + "▌")
 
-        st.markdown(resp)
+            message_placeholder.markdown(full_response)
+            resp = full_response
+        else:
+            # Modo tradicional (mantido para compatibilidade)
+            with st.spinner("Thinking..."):
+                # Usar a função de streaming mas coletar tudo
+                full_response = ""
+                for chunk in st.session_state.api.send_message_stream(
+                    prompt, model, temp, max_t, history, files
+                ):
+                    full_response += chunk
+                resp = full_response
+
+            st.markdown(resp)
+
         st.session_state.msgs.append({"role": "assistant", "content": resp})
