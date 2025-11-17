@@ -71,6 +71,23 @@ class ClaudeAPI:
                 st.error(f"❌ Error initializing Claude API: {str(e)}")
                 self.client = None
 
+    def extract_text_from_pdf(self, pdf_file):
+        """Extrai texto de um arquivo PDF"""
+        try:
+            import PyPDF2
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            text = ""
+            for page_num, page in enumerate(pdf_reader.pages, 1):
+                page_text = page.extract_text()
+                text += f"\n--- Página {page_num} ---\n{page_text}\n"
+            return text
+        except ImportError:
+            st.error("❌ PyPDF2 não está instalado. Execute: pip install PyPDF2")
+            return None
+        except Exception as e:
+            st.error(f"❌ Erro ao processar PDF: {str(e)}")
+            return None
+
     def send_message_stream(self, msg, model, temp=0.7, max_t=2000, hist=None, files=None):
         """Versão com streaming que retorna um generator"""
         if not self.client: 
@@ -91,6 +108,16 @@ class ClaudeAPI:
                                 "data": base64.b64encode(f.read()).decode()
                             }
                         })
+                    elif f.name.endswith('.pdf'):
+                        # Processar arquivo PDF
+                        pdf_text = self.extract_text_from_pdf(f)
+                        if pdf_text:
+                            content.append({
+                                "type": "text", 
+                                "text": f"\n📄 {f.name} (PDF):\n```\n{pdf_text}\n```"
+                            })
+                        else:
+                            st.warning(f"Não foi possível extrair texto de {f.name}")
                     elif f.name.endswith(('.txt','.py','.csv','.md','.json','.php','.cfg','.sql')):
                         text_content = f.read().decode('utf-8', errors='ignore')
                         if f.name.endswith('.php'):
@@ -194,11 +221,11 @@ st.title("🤖 Claude Chat")
 for m in st.session_state.msgs: 
     st.chat_message(m["role"]).markdown(m["content"])
 
-# File uploader
+# File uploader - ADICIONADO 'pdf' AOS TIPOS ACEITOS
 files = st.file_uploader(
     "📎 Attach files", 
     accept_multiple_files=True, 
-    type=['png','jpg','jpeg','txt','py','csv','md','json','cfg','php','sql']
+    type=['png','jpg','jpeg','txt','py','csv','md','json','cfg','php','sql','pdf']
 )
 
 # Chat input
