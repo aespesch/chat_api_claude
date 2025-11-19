@@ -1,5 +1,6 @@
-import os, streamlit as st, anthropic, base64, warnings
+import os, streamlit as st, anthropic, base64, warnings, re
 from pathlib import Path
+from streamlit.components.v1 import html
 warnings.filterwarnings('ignore')
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
@@ -151,6 +152,69 @@ class ClaudeAPI:
         except Exception as e: 
             yield f"❌ Error: {str(e)}"
 
+
+def extract_mermaid_diagrams(text):
+    """Extrai todos os diagramas Mermaid do texto"""
+    # Padrão para encontrar blocos ```mermaid ... ```
+    pattern = r'```mermaid\s*\n(.*?)```'
+    matches = re.findall(pattern, text, re.DOTALL)
+    return matches
+
+
+def render_mermaid(mermaid_code, key=None):
+    """Renderiza um diagrama Mermaid usando HTML e JavaScript"""
+    # Escapar caracteres especiais para JavaScript
+    mermaid_code_escaped = mermaid_code.replace('`', '\\`').replace('$', '\\$')
+
+    mermaid_html = f"""
+    <div class="mermaid-container" style="background: white; padding: 20px; border-radius: 8px; margin: 10px 0;">
+        <div class="mermaid">
+{mermaid_code}
+        </div>
+    </div>
+
+    <script type="module">
+        import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+        mermaid.initialize({{ 
+            startOnLoad: true,
+            theme: 'default',
+            securityLevel: 'loose',
+            flowchart: {{
+                useMaxWidth: true,
+                htmlLabels: true,
+                curve: 'basis'
+            }}
+        }});
+    </script>
+    """
+
+    html(mermaid_html, height=400, scrolling=True)
+
+
+def render_message_with_mermaid(content):
+    """Renderiza uma mensagem, processando diagramas Mermaid separadamente"""
+    # Extrair diagramas Mermaid
+    mermaid_diagrams = extract_mermaid_diagrams(content)
+
+    if not mermaid_diagrams:
+        # Se não há diagramas, renderiza normalmente
+        st.markdown(content)
+        return
+
+    # Dividir o conteúdo em partes (texto e diagramas)
+    parts = re.split(r'```mermaid\s*\n.*?```', content, flags=re.DOTALL)
+
+    # Renderizar alternando entre texto e diagramas
+    for i, part in enumerate(parts):
+        if part.strip():
+            st.markdown(part)
+
+        # Renderizar diagrama Mermaid correspondente
+        if i < len(mermaid_diagrams):
+            st.markdown("**📊 Diagrama:**")
+            render_mermaid(mermaid_diagrams[i], key=f"mermaid_{i}_{hash(content)}")
+
+
 # Initialize session state
 if 'msgs' not in st.session_state: 
     st.session_state.msgs = []
@@ -214,14 +278,27 @@ with st.sidebar:
             else: 
                 st.warning("No messages to copy")
 
+    # Informação sobre Mermaid
+    st.divider()
+    st.markdown("### 📊 Mermaid Support")
+    st.info("Este chat suporta renderização de diagramas Mermaid! Peça ao Claude para criar diagramas usando a sintaxe ```mermaid```")
+
+    with st.expander("Ver exemplo"):
+        st.code("""```mermaid
+graph TD
+    A[Start] --> B[Process]
+    B --> C[End]
+```""", language="markdown")
+
 # Main chat interface
 st.title("🤖 Claude Chat")
 
 # Display chat history
 for m in st.session_state.msgs: 
-    st.chat_message(m["role"]).markdown(m["content"])
+    with st.chat_message(m["role"]):
+        render_message_with_mermaid(m["content"])
 
-# File uploader - ADICIONADO 'pdf' AOS TIPOS ACEITOS
+# File uploader
 files = st.file_uploader(
     "📎 Attach files", 
     accept_multiple_files=True, 
@@ -232,7 +309,8 @@ files = st.file_uploader(
 if prompt := st.chat_input("Type your message..."):
     # Add user message to history
     st.session_state.msgs.append({"role": "user", "content": prompt})
-    st.chat_message("user").markdown(prompt)
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
     # Get and display assistant response
     with st.chat_message("assistant"):
@@ -253,7 +331,9 @@ if prompt := st.chat_input("Type your message..."):
                 full_response += chunk
                 message_placeholder.markdown(full_response + "▌")
 
-            message_placeholder.markdown(full_response)
+            # Renderizar versão final com Mermaid
+            message_placeholder.empty()
+            render_message_with_mermaid(full_response)
             resp = full_response
         else:
             # Modo tradicional (mantido para compatibilidade)
@@ -266,6 +346,6 @@ if prompt := st.chat_input("Type your message..."):
                     full_response += chunk
                 resp = full_response
 
-            st.markdown(resp)
+            render_message_with_mermaid(resp)
 
         st.session_state.msgs.append({"role": "assistant", "content": resp})
