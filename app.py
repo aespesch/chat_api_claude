@@ -6,6 +6,9 @@ st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
 class ClaudeAPI:
     MODELS = {
+        # Modelo Padrão
+        "claude-opus-4-5-20251101": "Claude Opus 4.5 (Mais Avançado e Inteligente)",
+        
         # Modelos Mais Recentes e Recomendados (Claude 4.5)
         "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5 (Mais Inteligente para Agentes e Codificação)",
         "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (Mais Rápido, Inteligência Próxima à Fronteira)",
@@ -21,6 +24,7 @@ class ClaudeAPI:
 
     # Definir limites máximos de tokens por modelo
     MODEL_MAX_TOKENS = {
+        "claude-opus-4-5-20251101": 32000,
         "claude-sonnet-4-5-20250929": 64000,
         "claude-haiku-4-5-20251001": 64000,
         "claude-opus-4-1-20250805": 64000,
@@ -329,7 +333,7 @@ if prompt := st.chat_input("Type your message..."):
                 prompt, model, temp, max_t, history, files
             ):
                 full_response += chunk
-                message_placeholder.markdown(full_response + "▌")
+                message_placeholder.markdown(full_response + "▼")
 
             # Renderizar versão final com Mermaid
             message_placeholder.empty()
