@@ -1,184 +1,229 @@
-import os, streamlit as st, anthropic, base64, warnings, re
+import os, streamlit as st, anthropic, base64, warnings, re, json, html, io, hashlib
 from pathlib import Path
-from streamlit.components.v1 import html
+from streamlit.components.v1 import html as st_html
+from datetime import datetime
+import PyPDF2
 warnings.filterwarnings('ignore')
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
+class APIError(Exception):
+    """Custom API error class"""
+    pass
+
 class ClaudeAPI:
     MODELS = {
-        # Modelo Padrão
-        "claude-opus-4-5-20251101": "Claude Opus 4.5 (Mais Avançado e Inteligente)",
-        
-        # Modelos Mais Recentes e Recomendados (Claude 4.5)
-        "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5 (Mais Inteligente para Agentes e Codificação)",
-        "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (Mais Rápido, Inteligência Próxima à Fronteira)",
-        "claude-opus-4-1-20250805": "Claude Opus 4.1 (Excepcional para Raciocínio Especializado)",
-
-        # Modelos Legados (Ainda Disponíveis)
-        "claude-sonnet-4-20250514": "Claude Sonnet 4 (Legado)",
-        "claude-3-7-sonnet-20250219": "Claude 3.7 Sonnet (Legado)",
-        "claude-opus-4-20250514": "Claude Opus 4 (Legado)",
-        "claude-3-5-haiku-20241022": "Claude 3.5 Haiku (Legado)",
-        "claude-3-haiku-20240307": "Claude 3 Haiku (Legado)",
+        "claude-opus-4-5-20251101": "Claude Opus 4.5 (Most Advanced and Intelligent)",
+        "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5 (Smarter for Agents and Coding)",
+        "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (Fastest, Near-Frontier Intelligence)",
+        "claude-opus-4-1-20250805": "Claude Opus 4.1 (Exceptional for Specialized Reasoning)",
+        "claude-sonnet-4-20250514": "Claude Sonnet 4 (Legacy)",
+        "claude-3-7-sonnet-20250219": "Claude 3.7 Sonnet (Legacy)",
+        "claude-opus-4-20250514": "Claude Opus 4 (Legacy)",
+        "claude-3-5-haiku-20241022": "Claude 3.5 Haiku (Legacy)",
+        "claude-3-haiku-20240307": "Claude 3 Haiku (Legacy)",
     }
 
     MODEL_MAX_TOKENS = {
-        "claude-opus-4-5-20251101": 64000,      # Aumento de 100% sobre o Opus 4.1 (32k -> 64k)
-        "claude-sonnet-4-5-20250929": 64000,    # Mantém o padrão do Sonnet 4
-        "claude-haiku-4-5-20251001": 64000,     # Aumento massivo sobre o Haiku 3.5 (8k -> 64k)
-        "claude-opus-4-1-20250805": 32000,      # Restrito a 32k por design de densidade de raciocínio
-        "claude-sonnet-4-20250514": 64000,      # Sonnet 4 suporta o dobro de saída do Opus 4
-        "claude-opus-4-20250514": 32000,        # Limite original da arquitetura v4
-        "claude-3-7-sonnet-20250219": 131072,   # Valor técnico exato (2^17) para suporte a raciocínio longo
-        "claude-3-5-haiku-20241022": 8192,      # Padrão da era 3.5
-        "claude-3-haiku-20240307": 4096,        # Limite legado da era 3.0
+        "claude-opus-4-5-20251101": 64000,
+        "claude-sonnet-4-5-20250929": 64000,
+        "claude-haiku-4-5-20251001": 64000,
+        "claude-opus-4-1-20250805": 32000,
+        "claude-sonnet-4-20250514": 64000,
+        "claude-opus-4-20250514": 32000,
+        "claude-3-7-sonnet-20250219": 131072,
+        "claude-3-5-haiku-20241022": 8192,
+        "claude-3-haiku-20240307": 4096,
+    }
+
+    PROMPT_TEMPLATES = {
+        "Code Review": "Analyze this code and suggest improvements:",
+        "Summary": "Create an executive summary of the following text:",
+        "Translation": "Translate the following text to {language}:",
+        "Debug": "Find and fix errors in this code:",
+        "Explain": "Explain this concept in simple terms:",
+        "Refactor": "Refactor this code for better performance and readability:",
     }
 
     @classmethod
     def get_max_tokens(cls, model):
-        """Retorna o limite máximo de tokens para um modelo específico"""
+        """Returns maximum token limit for a specific model"""
         return cls.MODEL_MAX_TOKENS.get(model, 4000)
 
     def __init__(self):
-        api_key = None
+        self.client = None
+        self.api_key = self._get_api_key()
 
-        # Primeiro verifica se st.secrets está disponível
+        if self.api_key:
+            try:
+                self.client = anthropic.Anthropic(api_key=self.api_key)
+                if not self._validate_api_key():
+                    st.error("❌ Invalid API key!")
+                    self.client = None
+            except Exception as e:
+                st.error(f"❌ Error initializing API: {str(e)}")
+                self.client = None
+        else:
+            st.error("❌ API key not found!")
+
+    def _get_api_key(self):
+        """Get API key from various sources"""
         if hasattr(st, 'secrets') and len(st.secrets) > 0:
             try:
-                api_key = st.secrets.get("KEY")
-            except Exception:
+                return st.secrets.get("KEY")
+            except:
                 pass
 
-        # Se não conseguiu do Streamlit, tenta variável de ambiente
-        if not api_key:
-            api_key = os.getenv("KEY")
+        api_key = os.getenv("KEY")
+        if api_key:
+            return api_key
 
-        # Se não conseguiu, tenta do arquivo local
-        if not api_key:
-            try:
-                import toml
-                secrets_path = Path(__file__).parent / ".streamlit" / "secrets.toml"
-
-                if secrets_path.exists():
-                    secrets = toml.load(secrets_path)
-                    api_key = secrets.get("KEY")
-            except Exception as e:
-                st.warning(f"Could not load local secrets: {e}")
-
-        if not api_key:
-            st.error("❌ API key not found! Please set it in Streamlit secrets or environment variables.")
-            self.client = None
-        else:
-            try:
-                self.client = anthropic.Anthropic(api_key=api_key)
-            except Exception as e:
-                st.error(f"❌ Error initializing Claude API: {str(e)}")
-                self.client = None
-
-    def extract_text_from_pdf(self, pdf_file):
-        """Extrai texto de um arquivo PDF"""
         try:
-            import PyPDF2
-            # Correção 1: Garantir que o cursor esteja no início
-            pdf_file.seek(0)
-            pdf_reader = PyPDF2.PdfReader(pdf_file)
-            text = ""
-            for page_num, page in enumerate(pdf_reader.pages, 1):
-                page_text = page.extract_text()
-                text += f"\n--- Página {page_num} ---\n{page_text}\n"
-            return text
-        except ImportError:
-            st.error("❌ PyPDF2 não está instalado. Execute: pip install PyPDF2")
-            return None
-        except Exception as e:
-            st.error(f"❌ Erro ao processar PDF: {str(e)}")
-            return None
+            import toml
+            secrets_path = Path(__file__).parent / ".streamlit" / "secrets.toml"
+            if secrets_path.exists():
+                secrets = toml.load(secrets_path)
+                return secrets.get("KEY")
+        except:
+            pass
 
-    def send_message_stream(self, msg, model, temp=0.7, max_t=2000, hist=None, files=None):
-        """Versão com streaming que retorna um generator"""
+        return None
+
+    def _validate_api_key(self):
+        """Validate API key with minimal call"""
+        try:
+            self.client.messages.create(
+                model="claude-3-haiku-20240307",
+                max_tokens=1,
+                messages=[{"role": "user", "content": "Hi"}]
+            )
+            return True
+        except:
+            return False
+
+    def send_message_stream(self, msg, model, temp=0.7, max_t=2000, hist=None, files=None, system_prompt=None):
+        """Stream version that returns a generator"""
         if not self.client: 
             yield "❌ API key not configured"
             return
 
-        content = [{"type": "text", "text": msg}]
+        content = [{"type": "text", "text": sanitize_input(msg)}]
 
         if files:
             for f in files:
-                # Correção 2: Resetar o ponteiro do arquivo para o início antes de ler
                 f.seek(0)
-                
-                # Correção 3: Usar lower() para garantir que .TXT, .PDF sejam reconhecidos
-                fname = f.name.lower()
-                
                 try:
-                    if f.type.startswith('image/'): 
-                        content.append({
-                            "type": "image", 
-                            "source": {
-                                "type": "base64", 
-                                "media_type": f.type, 
-                                "data": base64.b64encode(f.read()).decode()
-                            }
-                        })
-                    elif fname.endswith('.pdf'):
-                        # Processar arquivo PDF
-                        pdf_text = self.extract_text_from_pdf(f)
-                        if pdf_text:
-                            content.append({
-                                "type": "text", 
-                                "text": f"\n📄 {f.name} (PDF):\n```\n{pdf_text}\n```"
-                            })
-                        else:
-                            st.warning(f"Não foi possível extrair texto de {f.name}")
-                    # Lista de extensões de texto
-                    elif fname.endswith(('.txt','.py','.csv','.md','.json','.php','.cfg','.sql','.js','.html','.css','.xml','.yml','.yaml')):
-                        text_content = f.read().decode('utf-8', errors='ignore')
-                        if fname.endswith('.php'):
-                            lang = 'php'
-                        elif fname.endswith('.sql'):
-                            lang = 'sql'
-                        elif fname.endswith('.py'):
-                            lang = 'python'
-                        elif fname.endswith(('.json', '.js')):
-                            lang = 'javascript'
-                        else:
-                            lang = ''
-                        content.append({
-                            "type": "text", 
-                            "text": f"\n📄 {f.name}:\n```{lang}\n{text_content}\n```"
-                        })
+                    processed_content = process_file(f)
+                    if processed_content:
+                        content.append(processed_content)
                 except Exception as e:
                     st.warning(f"Could not process file {f.name}: {e}")
 
         msgs = (hist or []) + [{"role": "user", "content": content}]
 
-        try: 
-            # Usar stream=True para habilitar streaming
-            with self.client.messages.stream(
-                model=model, 
-                max_tokens=max_t, 
-                temperature=temp, 
-                messages=msgs
-            ) as stream:
+        kwargs = {
+            "model": model,
+            "max_tokens": max_t,
+            "temperature": temp,
+            "messages": msgs
+        }
+
+        if system_prompt:
+            kwargs["system"] = system_prompt
+
+        try:
+            with self.client.messages.stream(**kwargs) as stream:
                 for text in stream.text_stream:
                     yield text
-
+        except anthropic.RateLimitError:
+            yield "⏱️ Rate limit reached. Please wait a few seconds..."
+        except anthropic.AuthenticationError:
+            yield "🔐 Authentication error. Please check your API key."
         except anthropic.BadRequestError as e:
-            yield f"❌ Bad Request: {str(e)} - Model might not exist or be accessible"
-        except Exception as e: 
-            yield f"❌ Error: {str(e)}"
+            if "model" in str(e).lower():
+                yield f"❌ Model '{model}' not available"
+            else:
+                yield f"❌ Invalid request: {str(e)}"
+        except Exception as e:
+            yield f"❌ Unexpected error: {str(e)}"
+
+@st.cache_data(ttl=3600)
+def extract_text_from_pdf_cached(pdf_content):
+    """Cached version of PDF extraction"""
+    pdf_file = io.BytesIO(pdf_content)
+    pdf_reader = PyPDF2.PdfReader(pdf_file)
+    text = ""
+    for page_num, page in enumerate(pdf_reader.pages, 1):
+        text += f"\n--- Page {page_num} ---\n{page.extract_text()}\n"
+    return text
+
+def sanitize_input(text):
+    """Sanitize user input"""
+    return html.escape(text)
+
+def validate_file(file):
+    """Validate file before processing"""
+    MAX_SIZE = 10 * 1024 * 1024
+
+    if file.size > MAX_SIZE:
+        raise ValueError(f"File too large: {file.size/1024/1024:.1f}MB")
+
+    return True
+
+FILE_PROCESSORS = {
+    '.pdf': lambda f: {"type": "text", "text": f"\n📄 {f.name} (PDF):\n```\n{extract_text_from_pdf_cached(f.read())}\n```"},
+    '.xlsx': lambda f: {"type": "text", "text": f"\n📄 {f.name}: Excel file processing not implemented\n"},
+    '.docx': lambda f: {"type": "text", "text": f"\n📄 {f.name}: Word file processing not implemented\n"},
+    '.ipynb': lambda f: {"type": "text", "text": f"\n📄 {f.name}: Jupyter notebook processing not implemented\n"},
+    '.zip': lambda f: {"type": "text", "text": f"\n📄 {f.name}: ZIP file processing not implemented\n"},
+}
+
+def process_file(file):
+    """Universal file processor"""
+    validate_file(file)
+    extension = Path(file.name).suffix.lower()
+    fname = file.name.lower()
+
+    if file.type.startswith('image/'):
+        file.seek(0)
+        return {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": file.type,
+                "data": base64.b64encode(file.read()).decode()
+            }
+        }
+
+    if extension in FILE_PROCESSORS:
+        file.seek(0)
+        return FILE_PROCESSORS[extension](file)
+
+    text_extensions = ['.txt','.py','.csv','.md','.json','.php','.cfg','.sql','.js','.html','.css','.xml','.yml','.yaml']
+    if extension in text_extensions:
+        file.seek(0)
+        text_content = file.read().decode('utf-8', errors='ignore')
+        lang_map = {
+            '.php': 'php', '.sql': 'sql', '.py': 'python',
+            '.json': 'json', '.js': 'javascript', '.html': 'html',
+            '.css': 'css', '.xml': 'xml', '.yml': 'yaml', '.yaml': 'yaml'
+        }
+        lang = lang_map.get(extension, '')
+        return {"type": "text", "text": f"\n📄 {file.name}:\n```{lang}\n{text_content}\n```"}
+
+    return None
+
+def estimate_tokens(text):
+    """Estimate token count"""
+    return len(text) // 4
 
 def extract_mermaid_diagrams(text):
-    """Extrai todos os diagramas Mermaid do texto"""
-    # Padrão para encontrar blocos ```mermaid ... ```
+    """Extract all Mermaid diagrams from text"""
     pattern = r'```mermaid\s*\n(.*?)```'
     matches = re.findall(pattern, text, re.DOTALL)
     return matches
 
-
 def render_mermaid(mermaid_code, key=None):
-    """Renderiza um diagrama Mermaid usando HTML e JavaScript"""
-    # Escapar caracteres especiais para JavaScript
+    """Render Mermaid diagram using HTML and JavaScript"""
     mermaid_code_escaped = mermaid_code.replace('`', '\\`').replace('$', '\\$')
 
     mermaid_html = f"""
@@ -203,32 +248,110 @@ def render_mermaid(mermaid_code, key=None):
     </script>
     """
 
-    html(mermaid_html, height=400, scrolling=True)
-
+    st_html(mermaid_html, height=400, scrolling=True)
 
 def render_message_with_mermaid(content):
-    """Renderiza uma mensagem, processando diagramas Mermaid separadamente"""
-    # Extrair diagramas Mermaid
+    """Render message, processing Mermaid diagrams separately"""
     mermaid_diagrams = extract_mermaid_diagrams(content)
 
     if not mermaid_diagrams:
-        # Se não há diagramas, renderiza normalmente
         st.markdown(content)
         return
 
-    # Dividir o conteúdo em partes (texto e diagramas)
     parts = re.split(r'```mermaid\s*\n.*?```', content, flags=re.DOTALL)
 
-    # Renderizar alternando entre texto e diagramas
     for i, part in enumerate(parts):
         if part.strip():
             st.markdown(part)
 
-        # Renderizar diagrama Mermaid correspondente
         if i < len(mermaid_diagrams):
-            st.markdown("**📊 Diagrama:**")
+            st.markdown("**📊 Diagram:**")
             render_mermaid(mermaid_diagrams[i], key=f"mermaid_{i}_{hash(content)}")
 
+def display_message_with_metadata(message, idx):
+    """Display message with useful metadata"""
+    col1, col2, col3 = st.columns([8, 1, 1])
+
+    with col1:
+        render_message_with_mermaid(message['content'])
+
+    with col2:
+        token_count = estimate_tokens(message['content'])
+        st.caption(f"🔤 {token_count}")
+
+    with col3:
+        if st.button("📋", key=f"copy_{idx}", help="Copy"):
+            st.code(message['content'])
+
+def save_conversation():
+    """Save current conversation"""
+    if not st.session_state.msgs:
+        st.warning("No messages to save")
+        return
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"chat_{timestamp}.json"
+
+    conversation_data = {
+        "timestamp": timestamp,
+        "messages": st.session_state.msgs,
+        "model": st.session_state.selected_model
+    }
+
+    if 'saved_conversations' not in st.session_state:
+        st.session_state.saved_conversations = {}
+
+    st.session_state.saved_conversations[filename] = conversation_data
+    st.success(f"Conversation saved as {filename}")
+
+def load_conversation(filename):
+    """Load saved conversation"""
+    if filename in st.session_state.saved_conversations:
+        data = st.session_state.saved_conversations[filename]
+        st.session_state.msgs = data["messages"]
+        st.session_state.selected_model = data.get("model", list(ClaudeAPI.MODELS.keys())[0])
+        st.success("Conversation loaded")
+        st.rerun()
+
+def list_saved_conversations():
+    """List all saved conversations"""
+    if 'saved_conversations' in st.session_state:
+        return list(st.session_state.saved_conversations.keys())
+    return []
+
+def export_conversation(format_type="Markdown"):
+    """Export conversation in different formats"""
+    if not st.session_state.msgs:
+        return None
+
+    if format_type == "Markdown":
+        content = "# Chat Export\n\n"
+        for msg in st.session_state.msgs:
+            role = msg['role'].capitalize()
+            content += f"## {role}\n\n{msg['content']}\n\n---\n\n"
+        return content
+    elif format_type == "JSON":
+        return json.dumps(st.session_state.msgs, indent=2)
+
+    return None
+
+def create_usage_dataframe(messages):
+    """Create usage statistics dataframe"""
+    import pandas as pd
+
+    data = []
+    total_tokens = 0
+    for i, msg in enumerate(messages):
+        tokens = estimate_tokens(msg['content'])
+        total_tokens += tokens
+        data.append({
+            'Message': i + 1,
+            'Role': msg['role'],
+            'Tokens': tokens,
+            'Cumulative': total_tokens
+        })
+
+    return pd.DataFrame(data)
 
 # Initialize session state
 if 'msgs' not in st.session_state: 
@@ -237,10 +360,18 @@ if 'api' not in st.session_state:
     st.session_state.api = ClaudeAPI()
 if 'selected_model' not in st.session_state:
     st.session_state.selected_model = list(ClaudeAPI.MODELS.keys())[0]
+if 'theme' not in st.session_state:
+    st.session_state.theme = "Light"
+if 'system_prompt' not in st.session_state:
+    st.session_state.system_prompt = "You are a helpful and accurate assistant."
 
 # Sidebar
 with st.sidebar:
     st.title("⚙️ Settings")
+
+    # Theme
+    theme = st.selectbox("🎨 Theme", ["Light", "Dark", "Auto"])
+    st.session_state.theme = theme
 
     # Model selection
     model = st.selectbox(
@@ -250,15 +381,11 @@ with st.sidebar:
         key='model_selector'
     )
 
-    # Atualizar modelo selecionado no session state
     if model != st.session_state.selected_model:
         st.session_state.selected_model = model
         st.rerun()
 
-    # Obter limite máximo para o modelo selecionado
     max_tokens_limit = ClaudeAPI.get_max_tokens(model)
-
-    # Mostrar informação sobre o limite
     st.info(f"📊 Max tokens for this model: {max_tokens_limit:,}")
 
     # Parameters
@@ -267,96 +394,147 @@ with st.sidebar:
         "Max Tokens", 
         100, 
         max_tokens_limit, 
-        min(8000, max_tokens_limit),  # Valor padrão aumentado
+        min(8000, max_tokens_limit),
         100
     )
 
-    # Toggle para streaming
     use_streaming = st.checkbox("🔄 Enable Streaming", value=True, 
-                                help="Ver resposta em tempo real (recomendado para respostas longas)")
+                                help="See response in real time (recommended for long responses)")
+
+    # System Prompt Customization
+    with st.expander("📝 System Prompt"):
+        st.session_state.system_prompt = st.text_area(
+            "Define assistant behavior:",
+            value=st.session_state.system_prompt,
+            height=100
+        )
+
+    # Saved Conversations
+    with st.expander("💾 Saved Conversations"):
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Save Current", use_container_width=True):
+                save_conversation()
+
+        saved_chats = list_saved_conversations()
+        if saved_chats:
+            selected_chat = st.selectbox("Load conversation:", saved_chats)
+            with col2:
+                if st.button("Load", use_container_width=True):
+                    load_conversation(selected_chat)
+
+    # Export Options
+    with st.expander("📥 Export Conversation"):
+        format_type = st.selectbox("Format:", ["Markdown", "JSON"])
+
+        if st.button("Generate Export"):
+            content = export_conversation(format_type)
+            if content:
+                file_ext = "md" if format_type == "Markdown" else "json"
+                mime_type = "text/markdown" if format_type == "Markdown" else "application/json"
+
+                st.download_button(
+                    f"📥 Download {format_type}",
+                    content,
+                    f"chat_export.{file_ext}",
+                    mime_type
+                )
+
+    # Statistics
+    with st.expander("📊 Statistics"):
+        if st.session_state.msgs:
+            total_msgs = len(st.session_state.msgs)
+            total_tokens = sum(estimate_tokens(m['content']) for m in st.session_state.msgs)
+
+            col1, col2 = st.columns(2)
+            col1.metric("Messages", total_msgs)
+            col2.metric("Tokens", f"{total_tokens:,}")
+
+            if total_msgs > 0:
+                df = create_usage_dataframe(st.session_state.msgs)
+                st.line_chart(df.set_index('Message')['Cumulative'])
 
     # Buttons
+    st.divider()
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🗑️ Clear", use_container_width=True): 
             st.session_state.msgs = []
             st.rerun()
     with col2:
-        if st.button("📋 Copy", use_container_width=True):
+        if st.button("📋 Copy All", use_container_width=True):
             if st.session_state.msgs:
                 chat_text = "\n\n".join([
                     f"**{m['role'].title()}**: {m['content']}" 
                     for m in st.session_state.msgs
                 ])
                 st.text_area("Copy this text:", chat_text, height=200)
-                st.info("Select all text above and copy manually (Ctrl+C)")
             else: 
                 st.warning("No messages to copy")
 
-    # Informação sobre Mermaid
+    # Mermaid info
     st.divider()
     st.markdown("### 📊 Mermaid Support")
-    st.info("Este chat suporta renderização de diagramas Mermaid! Peça ao Claude para criar diagramas usando a sintaxe ```mermaid```")
-
-    with st.expander("Ver exemplo"):
-        st.code("""```mermaid
-graph TD
-    A[Start] --> B[Process]
-    B --> C[End]
-```""", language="markdown")
+    st.info("This chat supports Mermaid diagram rendering! Ask Claude to create diagrams using ```mermaid``` syntax")
 
 # Main chat interface
 st.title("🤖 Claude Chat")
 
-# Display chat history
-for m in st.session_state.msgs: 
-    with st.chat_message(m["role"]):
-        render_message_with_mermaid(m["content"])
+# Prompt Templates
+col1, col2 = st.columns([4, 1])
+with col2:
+    template = st.selectbox("📝 Templates", [""] + list(ClaudeAPI.PROMPT_TEMPLATES.keys()))
 
-# File uploader
+template_prompt = ""
+if template:
+    template_prompt = ClaudeAPI.PROMPT_TEMPLATES[template]
+    st.info(f"Template: {template_prompt}")
+
+# Display chat history with metadata
+for idx, m in enumerate(st.session_state.msgs): 
+    with st.chat_message(m["role"]):
+        display_message_with_metadata(m, idx)
+
+# File uploader with extended support
 files = st.file_uploader(
     "📎 Attach files", 
     accept_multiple_files=True, 
-    type=['png','jpg','jpeg','txt','py','csv','md','json','cfg','php','sql','pdf']
+    type=['png','jpg','jpeg','txt','py','csv','md','json','cfg','php','sql','pdf','js','html','css','xml','yml','yaml','xlsx','docx','ipynb','zip']
 )
 
 # Chat input
-if prompt := st.chat_input("Type your message..."):
-    # Add user message to history
+if prompt := st.chat_input("Type your message..." if not template_prompt else template_prompt):
+    if template_prompt and prompt == template_prompt:
+        prompt = template_prompt
+
     st.session_state.msgs.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Get and display assistant response
     with st.chat_message("assistant"):
-        # Prepare history for API
         history = [
             {"role": m["role"], "content": m["content"]} 
             for m in st.session_state.msgs[:-1]
         ]
 
         if use_streaming:
-            # Streaming mode - mostra resposta em tempo real
             message_placeholder = st.empty()
             full_response = ""
 
             for chunk in st.session_state.api.send_message_stream(
-                prompt, model, temp, max_t, history, files
+                prompt, model, temp, max_t, history, files, st.session_state.system_prompt
             ):
                 full_response += chunk
                 message_placeholder.markdown(full_response + "▼")
 
-            # Renderizar versão final com Mermaid
             message_placeholder.empty()
             render_message_with_mermaid(full_response)
             resp = full_response
         else:
-            # Modo tradicional (mantido para compatibilidade)
             with st.spinner("Thinking..."):
-                # Usar a função de streaming mas coletar tudo
                 full_response = ""
                 for chunk in st.session_state.api.send_message_stream(
-                    prompt, model, temp, max_t, history, files
+                    prompt, model, temp, max_t, history, files, st.session_state.system_prompt
                 ):
                     full_response += chunk
                 resp = full_response
