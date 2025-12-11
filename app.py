@@ -404,7 +404,111 @@ with st.sidebar:
                 }
             </style>
         """, unsafe_allow_html=True)
-        
+
+    # Model selection
+    model = st.selectbox(
+        "Model", 
+        list(ClaudeAPI.MODELS.keys()), 
+        format_func=lambda x: ClaudeAPI.MODELS[x],
+        key='model_selector'
+    )
+
+    if model != st.session_state.selected_model:
+        st.session_state.selected_model = model
+        st.rerun()
+
+    max_tokens_limit = ClaudeAPI.get_max_tokens(model)
+    st.info(f"📊 Max tokens for this model: {max_tokens_limit:,}")
+
+    # Parameters
+    temp = st.slider("Temperature", 0.0, 1.0, 0.5, 0.1)
+    max_t = st.slider(
+        "Max Tokens", 
+        100, 
+        max_tokens_limit, 
+        min(8000, max_tokens_limit),
+        100
+    )
+
+    use_streaming = st.checkbox("🔄 Enable Streaming", value=True, 
+                                help="See response in real time (recommended for long responses)")
+
+    # System Prompt Customization
+    with st.expander("📝 System Prompt"):
+        st.session_state.system_prompt = st.text_area(
+            "Define assistant behavior:",
+            value=st.session_state.system_prompt,
+            height=100
+        )
+
+    # Saved Conversations
+    with st.expander("💾 Saved Conversations"):
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Save Current", use_container_width=True):
+                save_conversation()
+
+        saved_chats = list_saved_conversations()
+        if saved_chats:
+            selected_chat = st.selectbox("Load conversation:", saved_chats)
+            with col2:
+                if st.button("Load", use_container_width=True):
+                    load_conversation(selected_chat)
+
+    # Export Options
+    with st.expander("📥 Export Conversation"):
+        format_type = st.selectbox("Format:", ["Markdown", "JSON"])
+
+        if st.button("Generate Export"):
+            content = export_conversation(format_type)
+            if content:
+                file_ext = "md" if format_type == "Markdown" else "json"
+                mime_type = "text/markdown" if format_type == "Markdown" else "application/json"
+
+                st.download_button(
+                    f"📥 Download {format_type}",
+                    content,
+                    f"chat_export.{file_ext}",
+                    mime_type
+                )
+
+    # Statistics
+    with st.expander("📊 Statistics"):
+        if st.session_state.msgs:
+            total_msgs = len(st.session_state.msgs)
+            total_tokens = sum(estimate_tokens(m['content']) for m in st.session_state.msgs)
+
+            col1, col2 = st.columns(2)
+            col1.metric("Messages", total_msgs)
+            col2.metric("Tokens", f"{total_tokens:,}")
+
+            if total_msgs > 0:
+                df = create_usage_dataframe(st.session_state.msgs)
+                st.line_chart(df.set_index('Message')['Cumulative'])
+
+    # Buttons
+    st.divider()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🗑️ Clear", use_container_width=True): 
+            st.session_state.msgs = []
+            st.rerun()
+    with col2:
+        if st.button("📋 Copy All", use_container_width=True):
+            if st.session_state.msgs:
+                chat_text = "\n\n".join([
+                    f"**{m['role'].title()}**: {m['content']}" 
+                    for m in st.session_state.msgs
+                ])
+                st.text_area("Copy this text:", chat_text, height=200)
+            else: 
+                st.warning("No messages to copy")
+
+    # Mermaid info
+    st.divider()
+    st.markdown("### 📊 Mermaid Support")
+    st.info("This chat supports Mermaid diagram rendering! Ask Claude to create diagrams using ```mermaid``` syntax")
+
 # Main chat interface
 st.title("🤖 Claude Chat")
 
