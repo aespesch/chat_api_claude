@@ -22,17 +22,17 @@ class ClaudeAPI:
         "claude-3-haiku-20240307": "Claude 3 Haiku (Legado)",
     }
 
-MODEL_MAX_TOKENS = {
-    "claude-opus-4-5-20251101": 64000,      # Aumento de 100% sobre o Opus 4.1 (32k -> 64k)
-    "claude-sonnet-4-5-20250929": 64000,    # Mantém o padrão do Sonnet 4
-    "claude-haiku-4-5-20251001": 64000,     # Aumento massivo sobre o Haiku 3.5 (8k -> 64k)
-    "claude-opus-4-1-20250805": 32000,      # Restrito a 32k por design de densidade de raciocínio
-    "claude-sonnet-4-20250514": 64000,      # Sonnet 4 suporta o dobro de saída do Opus 4
-    "claude-opus-4-20250514": 32000,        # Limite original da arquitetura v4
-    "claude-3-7-sonnet-20250219": 131072,   # Valor técnico exato (2^17) para suporte a raciocínio longo
-    "claude-3-5-haiku-20241022": 8192,      # Padrão da era 3.5
-    "claude-3-haiku-20240307": 4096,        # Limite legado da era 3.0
-}
+    MODEL_MAX_TOKENS = {
+        "claude-opus-4-5-20251101": 64000,      # Aumento de 100% sobre o Opus 4.1 (32k -> 64k)
+        "claude-sonnet-4-5-20250929": 64000,    # Mantém o padrão do Sonnet 4
+        "claude-haiku-4-5-20251001": 64000,     # Aumento massivo sobre o Haiku 3.5 (8k -> 64k)
+        "claude-opus-4-1-20250805": 32000,      # Restrito a 32k por design de densidade de raciocínio
+        "claude-sonnet-4-20250514": 64000,      # Sonnet 4 suporta o dobro de saída do Opus 4
+        "claude-opus-4-20250514": 32000,        # Limite original da arquitetura v4
+        "claude-3-7-sonnet-20250219": 131072,   # Valor técnico exato (2^17) para suporte a raciocínio longo
+        "claude-3-5-haiku-20241022": 8192,      # Padrão da era 3.5
+        "claude-3-haiku-20240307": 4096,        # Limite legado da era 3.0
+    }
 
     @classmethod
     def get_max_tokens(cls, model):
