@@ -22,18 +22,17 @@ class ClaudeAPI:
         "claude-3-haiku-20240307": "Claude 3 Haiku (Legado)",
     }
 
-    # Definir limites máximos de tokens por modelo
-    MODEL_MAX_TOKENS = {
-        "claude-opus-4-5-20251101": 32000,
-        "claude-sonnet-4-5-20250929": 64000,
-        "claude-haiku-4-5-20251001": 64000,
-        "claude-opus-4-1-20250805": 64000,
-        "claude-sonnet-4-20250514": 8192,
-        "claude-3-7-sonnet-20250219": 8192,
-        "claude-opus-4-20250514": 16384,
-        "claude-3-5-haiku-20241022": 8192,
-        "claude-3-haiku-20240307": 4096,
-    }
+MODEL_MAX_TOKENS = {
+    "claude-opus-4-5-20251101": 64000,      # Aumento de 100% sobre o Opus 4.1 (32k -> 64k)
+    "claude-sonnet-4-5-20250929": 64000,    # Mantém o padrão do Sonnet 4
+    "claude-haiku-4-5-20251001": 64000,     # Aumento massivo sobre o Haiku 3.5 (8k -> 64k)
+    "claude-opus-4-1-20250805": 32000,      # Restrito a 32k por design de densidade de raciocínio
+    "claude-sonnet-4-20250514": 64000,      # Sonnet 4 suporta o dobro de saída do Opus 4
+    "claude-opus-4-20250514": 32000,        # Limite original da arquitetura v4
+    "claude-3-7-sonnet-20250219": 131072,   # Valor técnico exato (2^17) para suporte a raciocínio longo
+    "claude-3-5-haiku-20241022": 8192,      # Padrão da era 3.5
+    "claude-3-haiku-20240307": 4096,        # Limite legado da era 3.0
+}
 
     @classmethod
     def get_max_tokens(cls, model):
@@ -80,6 +79,8 @@ class ClaudeAPI:
         """Extrai texto de um arquivo PDF"""
         try:
             import PyPDF2
+            # Correção 1: Garantir que o cursor esteja no início
+            pdf_file.seek(0)
             pdf_reader = PyPDF2.PdfReader(pdf_file)
             text = ""
             for page_num, page in enumerate(pdf_reader.pages, 1):
@@ -103,6 +104,12 @@ class ClaudeAPI:
 
         if files:
             for f in files:
+                # Correção 2: Resetar o ponteiro do arquivo para o início antes de ler
+                f.seek(0)
+                
+                # Correção 3: Usar lower() para garantir que .TXT, .PDF sejam reconhecidos
+                fname = f.name.lower()
+                
                 try:
                     if f.type.startswith('image/'): 
                         content.append({
@@ -113,7 +120,7 @@ class ClaudeAPI:
                                 "data": base64.b64encode(f.read()).decode()
                             }
                         })
-                    elif f.name.endswith('.pdf'):
+                    elif fname.endswith('.pdf'):
                         # Processar arquivo PDF
                         pdf_text = self.extract_text_from_pdf(f)
                         if pdf_text:
@@ -123,12 +130,17 @@ class ClaudeAPI:
                             })
                         else:
                             st.warning(f"Não foi possível extrair texto de {f.name}")
-                    elif f.name.endswith(('.txt','.py','.csv','.md','.json','.php','.cfg','.sql')):
+                    # Lista de extensões de texto
+                    elif fname.endswith(('.txt','.py','.csv','.md','.json','.php','.cfg','.sql','.js','.html','.css','.xml','.yml','.yaml')):
                         text_content = f.read().decode('utf-8', errors='ignore')
-                        if f.name.endswith('.php'):
+                        if fname.endswith('.php'):
                             lang = 'php'
-                        elif f.name.endswith('.sql'):
+                        elif fname.endswith('.sql'):
                             lang = 'sql'
+                        elif fname.endswith('.py'):
+                            lang = 'python'
+                        elif fname.endswith(('.json', '.js')):
+                            lang = 'javascript'
                         else:
                             lang = ''
                         content.append({
@@ -155,7 +167,6 @@ class ClaudeAPI:
             yield f"❌ Bad Request: {str(e)} - Model might not exist or be accessible"
         except Exception as e: 
             yield f"❌ Error: {str(e)}"
-
 
 def extract_mermaid_diagrams(text):
     """Extrai todos os diagramas Mermaid do texto"""
