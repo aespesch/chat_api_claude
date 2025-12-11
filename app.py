@@ -380,62 +380,163 @@ with st.sidebar:
     if st.session_state.theme == "Dark":
         st.markdown("""
             <style>
-                /* Main app background */
-                .stApp {
-                    background-color: #1E1E1E;
-                    color: #FFFFFF;
+                /* ===== GLOBAL DARK THEME ===== */
+
+                /* Root and main containers */
+                :root {
+                    color-scheme: dark;
                 }
 
-                /* Sidebar */
-                [data-testid="stSidebar"] {
-                    background-color: #2D2D2D;
-                    color: #FFFFFF;
+                .stApp, .main, [data-testid="stAppViewContainer"] {
+                    background-color: #1E1E1E !important;
+                    color: #FFFFFF !important;
+                }
+
+                /* Header area - fixes white rectangle at top */
+                header, [data-testid="stHeader"], .stAppHeader {
+                    background-color: #1E1E1E !important;
+                    color: #FFFFFF !important;
+                }
+                header[data-testid="stHeader"] {
+                    background-color: #1E1E1E !important;
+                }
+
+                /* Top toolbar/decoration */
+                [data-testid="stToolbar"], [data-testid="stDecoration"] {
+                    background-color: #1E1E1E !important;
+                }
+
+                /* Bottom area - fixes white rectangle at bottom */
+                [data-testid="stBottom"], .stBottom {
+                    background-color: #1E1E1E !important;
+                }
+                [data-testid="stBottomBlockContainer"] {
+                    background-color: #1E1E1E !important;
+                }
+
+                /* Main block container */
+                .block-container, [data-testid="stMainBlockContainer"] {
+                    background-color: #1E1E1E !important;
+                }
+
+                /* ===== SIDEBAR ===== */
+                [data-testid="stSidebar"], [data-testid="stSidebarContent"] {
+                    background-color: #2D2D2D !important;
+                    color: #FFFFFF !important;
                 }
                 [data-testid="stSidebar"] * {
                     color: #FFFFFF !important;
                 }
-                [data-testid="stSidebar"] .stSelectbox label,
-                [data-testid="stSidebar"] .stSlider label,
-                [data-testid="stSidebar"] .stCheckbox label {
+                [data-testid="stSidebarCollapsedControl"] {
+                    background-color: #2D2D2D !important;
+                }
+
+                /* ===== TEXT ELEMENTS ===== */
+                h1, h2, h3, h4, h5, h6, p, span, label, div, 
+                .stMarkdown, .stText, [data-testid="stMarkdownContainer"] {
                     color: #FFFFFF !important;
                 }
 
-                /* Headers and text */
-                h1, h2, h3, h4, h5, h6, p, span, label, .stMarkdown {
-                    color: #FFFFFF !important;
-                }
+                /* ===== FORM ELEMENTS ===== */
 
-                /* Selectbox and inputs */
+                /* Selectbox */
                 .stSelectbox > div > div,
-                .stTextInput > div > div > input,
-                .stTextArea > div > div > textarea {
+                [data-baseweb="select"],
+                [data-baseweb="select"] > div {
                     background-color: #3D3D3D !important;
                     color: #FFFFFF !important;
                     border-color: #555555 !important;
                 }
-
-                /* Selectbox dropdown */
-                [data-baseweb="select"] {
-                    background-color: #3D3D3D !important;
-                }
                 [data-baseweb="select"] * {
                     color: #FFFFFF !important;
+                }
+                [data-baseweb="popover"], [data-baseweb="menu"] {
+                    background-color: #3D3D3D !important;
+                }
+                [data-baseweb="popover"] *, [data-baseweb="menu"] * {
+                    color: #FFFFFF !important;
+                }
+
+                /* Text inputs */
+                .stTextInput > div > div > input,
+                .stTextArea > div > div > textarea,
+                input, textarea {
+                    background-color: #3D3D3D !important;
+                    color: #FFFFFF !important;
+                    border-color: #555555 !important;
                 }
 
                 /* Slider */
                 .stSlider > div > div > div {
                     color: #FFFFFF !important;
                 }
+                .stSlider label, .stSlider [data-testid="stTickBarMin"], 
+                .stSlider [data-testid="stTickBarMax"] {
+                    color: #FFFFFF !important;
+                }
 
-                /* Expander */
-                .streamlit-expanderHeader {
+                /* ===== FILE UPLOADER - CRITICAL FIX ===== */
+                [data-testid="stFileUploader"] {
+                    background-color: #2D2D2D !important;
+                }
+                [data-testid="stFileUploader"] section {
+                    background-color: #2D2D2D !important;
+                    border-color: #555555 !important;
+                }
+                [data-testid="stFileUploader"] * {
+                    color: #FFFFFF !important;
+                }
+
+                /* Browse files button - THE KEY FIX */
+                [data-testid="stFileUploader"] button,
+                [data-testid="stFileUploaderDropzone"] button,
+                [data-testid="baseButton-secondary"] {
+                    background-color: #4A4A4A !important;
+                    color: #FFFFFF !important;
+                    border: 1px solid #666666 !important;
+                }
+                [data-testid="stFileUploader"] button:hover,
+                [data-testid="stFileUploaderDropzone"] button:hover {
+                    background-color: #5A5A5A !important;
+                    color: #FFFFFF !important;
+                }
+
+                /* File uploader dropzone */
+                [data-testid="stFileUploaderDropzone"] {
+                    background-color: #2D2D2D !important;
+                    border-color: #555555 !important;
+                }
+                [data-testid="stFileUploaderDropzone"] * {
+                    color: #FFFFFF !important;
+                }
+
+                /* Small text in uploader */
+                [data-testid="stFileUploader"] small,
+                [data-testid="stFileUploaderDropzone"] small {
+                    color: #AAAAAA !important;
+                }
+
+                /* ===== BUTTONS ===== */
+                .stButton > button, button[kind="secondary"], 
+                button[kind="primary"], .stDownloadButton > button {
+                    background-color: #4A4A4A !important;
+                    color: #FFFFFF !important;
+                    border-color: #666666 !important;
+                }
+                .stButton > button:hover, button:hover {
+                    background-color: #5A5A5A !important;
+                    border-color: #888888 !important;
+                    color: #FFFFFF !important;
+                }
+
+                /* ===== EXPANDERS ===== */
+                .streamlit-expanderHeader,
+                [data-testid="stExpander"] summary,
+                [data-testid="stExpander"] > details > summary {
                     background-color: #3D3D3D !important;
                     color: #FFFFFF !important;
                 }
-                .streamlit-expanderContent {
-                    background-color: #2D2D2D !important;
-                    color: #FFFFFF !important;
-                }
+                .streamlit-expanderContent,
                 [data-testid="stExpander"] {
                     background-color: #2D2D2D !important;
                     border-color: #555555 !important;
@@ -444,103 +545,112 @@ with st.sidebar:
                     color: #FFFFFF !important;
                 }
 
-                /* Buttons */
-                .stButton > button {
-                    background-color: #4A4A4A !important;
-                    color: #FFFFFF !important;
-                    border-color: #666666 !important;
-                }
-                .stButton > button:hover {
-                    background-color: #5A5A5A !important;
-                    border-color: #888888 !important;
-                }
-
-                /* Info boxes */
-                .stAlert, [data-testid="stAlert"] {
-                    background-color: #2D4A5A !important;
-                    color: #FFFFFF !important;
-                }
-                .stAlert * {
-                    color: #FFFFFF !important;
-                }
+                /* ===== CHAT ELEMENTS ===== */
 
                 /* Chat messages */
-                [data-testid="stChatMessage"] {
+                [data-testid="stChatMessage"], .stChatMessage {
                     background-color: #2D2D2D !important;
                     color: #FFFFFF !important;
                 }
                 [data-testid="stChatMessage"] * {
                     color: #FFFFFF !important;
                 }
-                .stChatMessage {
-                    background-color: #2D2D2D !important;
+
+                /* Chat input container - fixes bottom white area */
+                [data-testid="stChatInput"],
+                [data-testid="stChatInputContainer"],
+                .stChatInputContainer {
+                    background-color: #1E1E1E !important;
                 }
 
-                /* Chat input */
-                [data-testid="stChatInput"] {
-                    background-color: #3D3D3D !important;
-                }
-                [data-testid="stChatInput"] textarea {
+                /* Chat input textarea */
+                [data-testid="stChatInput"] textarea,
+                [data-testid="stChatInputContainer"] textarea {
                     background-color: #3D3D3D !important;
                     color: #FFFFFF !important;
-                }
-
-                /* File uploader */
-                [data-testid="stFileUploader"] {
-                    background-color: #2D2D2D !important;
-                    color: #FFFFFF !important;
-                }
-                [data-testid="stFileUploader"] * {
-                    color: #FFFFFF !important;
-                }
-                [data-testid="stFileUploader"] section {
-                    background-color: #3D3D3D !important;
                     border-color: #555555 !important;
                 }
 
-                /* Metrics */
-                [data-testid="stMetric"] {
-                    background-color: #2D2D2D !important;
+                /* Chat input wrapper */
+                [data-testid="stChatInput"] > div,
+                .stChatInput > div {
+                    background-color: #3D3D3D !important;
+                    border-color: #555555 !important;
+                }
+                    
+                /* Chat input cursor fix */
+                [data-testid="stChatInput"] textarea,
+                [data-testid="stChatInputContainer"] textarea,
+                .stChatInput textarea {
+                    caret-color: #FFFFFF !important;
+                }
+
+                /* ===== ALERTS AND INFO BOXES ===== */
+                .stAlert, [data-testid="stAlert"],
+                [data-testid="stNotification"] {
+                    background-color: #2D4A5A !important;
+                    color: #FFFFFF !important;
+                }
+                .stAlert *, [data-testid="stAlert"] * {
+                    color: #FFFFFF !important;
+                }
+
+                /* ===== METRICS ===== */
+                [data-testid="stMetric"], [data-testid="stMetricValue"],
+                [data-testid="stMetricLabel"] {
+                    background-color: transparent !important;
+                    color: #FFFFFF !important;
                 }
                 [data-testid="stMetric"] * {
                     color: #FFFFFF !important;
                 }
 
-                /* Divider */
-                hr {
-                    border-color: #555555 !important;
-                }
-
-                /* Code blocks */
-                .stCodeBlock, code, pre {
+                /* ===== CODE BLOCKS ===== */
+                .stCodeBlock, code, pre, [data-testid="stCode"] {
                     background-color: #1A1A1A !important;
                     color: #E0E0E0 !important;
                 }
 
-                /* Caption text */
-                .stCaption, small {
+                /* ===== MISC ELEMENTS ===== */
+
+                /* Dividers */
+                hr, [data-testid="stHorizontalBlock"] {
+                    border-color: #555555 !important;
+                }
+
+                /* Captions */
+                .stCaption, small, figcaption {
                     color: #AAAAAA !important;
                 }
 
-                /* Download button */
-                .stDownloadButton > button {
-                    background-color: #4A4A4A !important;
-                    color: #FFFFFF !important;
-                }
-
-                /* Checkbox */
+                /* Checkboxes */
                 .stCheckbox label span {
                     color: #FFFFFF !important;
                 }
 
-                /* Main content area */
-                .main .block-container {
-                    color: #FFFFFF;
+                /* Links */
+                a {
+                    color: #6CB4EE !important;
                 }
 
-                /* Title */
-                .stTitle, [data-testid="stTitle"] {
-                    color: #FFFFFF !important;
+                /* Tooltips */
+                [data-testid="stTooltipIcon"] {
+                    color: #AAAAAA !important;
+                }
+
+                /* Charts background */
+                [data-testid="stVegaLiteChart"] {
+                    background-color: #2D2D2D !important;
+                }
+
+                /* Empty state */
+                [data-testid="stEmpty"] {
+                    background-color: #1E1E1E !important;
+                }
+
+                /* Spinner */
+                .stSpinner > div {
+                    border-color: #FFFFFF transparent transparent transparent !important;
                 }
             </style>
         """, unsafe_allow_html=True)
@@ -579,7 +689,7 @@ with st.sidebar:
         "Max Tokens", 
         100, 
         max_tokens_limit, 
-        min(8000, max_tokens_limit),
+        max_tokens_limit,
         100
     )
 
