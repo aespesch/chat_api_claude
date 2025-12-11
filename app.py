@@ -437,9 +437,9 @@ with st.sidebar:
                     color: #FFFFFF !important;
                 }
 
-                /* ===== FORM ELEMENTS ===== */
+                /* ===== SELECTBOX / DROPDOWN - CRITICAL FIX ===== */
 
-                /* Selectbox */
+                /* Main selectbox container */
                 .stSelectbox > div > div,
                 [data-baseweb="select"],
                 [data-baseweb="select"] > div {
@@ -447,13 +447,64 @@ with st.sidebar:
                     color: #FFFFFF !important;
                     border-color: #555555 !important;
                 }
-                [data-baseweb="select"] * {
+
+                /* Selected value text */
+                [data-baseweb="select"] span,
+                [data-baseweb="select"] div[class*="valueContainer"] span,
+                .stSelectbox [data-baseweb="select"] span {
                     color: #FFFFFF !important;
                 }
-                [data-baseweb="popover"], [data-baseweb="menu"] {
-                    background-color: #3D3D3D !important;
+
+                /* Dropdown arrow/icon */
+                [data-baseweb="select"] svg {
+                    fill: #FFFFFF !important;
                 }
-                [data-baseweb="popover"] *, [data-baseweb="menu"] * {
+
+                /* Dropdown menu/popover */
+                [data-baseweb="popover"],
+                [data-baseweb="menu"],
+                [data-baseweb="select"] [data-baseweb="popover"],
+                div[data-baseweb="popover"] > div,
+                ul[role="listbox"] {
+                    background-color: #3D3D3D !important;
+                    border-color: #555555 !important;
+                }
+
+                /* Dropdown menu items */
+                [data-baseweb="menu"] li,
+                [data-baseweb="menu"] ul li,
+                ul[role="listbox"] li,
+                li[role="option"],
+                [data-baseweb="menu"] [role="option"] {
+                    background-color: #3D3D3D !important;
+                    color: #FFFFFF !important;
+                }
+
+                /* Dropdown menu item text */
+                [data-baseweb="menu"] li span,
+                [data-baseweb="menu"] li div,
+                ul[role="listbox"] li span,
+                ul[role="listbox"] li div,
+                li[role="option"] span,
+                li[role="option"] div {
+                    color: #FFFFFF !important;
+                }
+
+                /* Hover state for dropdown items */
+                [data-baseweb="menu"] li:hover,
+                ul[role="listbox"] li:hover,
+                li[role="option"]:hover,
+                [data-baseweb="menu"] [role="option"]:hover {
+                    background-color: #4D4D4D !important;
+                    color: #FFFFFF !important;
+                }
+
+                /* Selected/highlighted item */
+                [data-baseweb="menu"] li[aria-selected="true"],
+                ul[role="listbox"] li[aria-selected="true"],
+                li[role="option"][aria-selected="true"],
+                [data-highlighted="true"] {
+                    background-color: #5D5D5D !important;
                     color: #FFFFFF !important;
                 }
 
@@ -475,7 +526,7 @@ with st.sidebar:
                     color: #FFFFFF !important;
                 }
 
-                /* ===== FILE UPLOADER - CRITICAL FIX ===== */
+                /* ===== FILE UPLOADER ===== */
                 [data-testid="stFileUploader"] {
                     background-color: #2D2D2D !important;
                 }
@@ -487,7 +538,7 @@ with st.sidebar:
                     color: #FFFFFF !important;
                 }
 
-                /* Browse files button - THE KEY FIX */
+                /* Browse files button */
                 [data-testid="stFileUploader"] button,
                 [data-testid="stFileUploaderDropzone"] button,
                 [data-testid="baseButton-secondary"] {
@@ -556,7 +607,7 @@ with st.sidebar:
                     color: #FFFFFF !important;
                 }
 
-                /* Chat input container - fixes bottom white area */
+                /* Chat input container */
                 [data-testid="stChatInput"],
                 [data-testid="stChatInputContainer"],
                 .stChatInputContainer {
@@ -577,7 +628,7 @@ with st.sidebar:
                     background-color: #3D3D3D !important;
                     border-color: #555555 !important;
                 }
-                    
+
                 /* Chat input cursor fix */
                 [data-testid="stChatInput"] textarea,
                 [data-testid="stChatInputContainer"] textarea,
