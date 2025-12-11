@@ -380,15 +380,167 @@ with st.sidebar:
     if st.session_state.theme == "Dark":
         st.markdown("""
             <style>
+                /* Main app background */
                 .stApp {
                     background-color: #1E1E1E;
                     color: #FFFFFF;
                 }
-                .stSidebar {
+
+                /* Sidebar */
+                [data-testid="stSidebar"] {
                     background-color: #2D2D2D;
+                    color: #FFFFFF;
+                }
+                [data-testid="stSidebar"] * {
+                    color: #FFFFFF !important;
+                }
+                [data-testid="stSidebar"] .stSelectbox label,
+                [data-testid="stSidebar"] .stSlider label,
+                [data-testid="stSidebar"] .stCheckbox label {
+                    color: #FFFFFF !important;
+                }
+
+                /* Headers and text */
+                h1, h2, h3, h4, h5, h6, p, span, label, .stMarkdown {
+                    color: #FFFFFF !important;
+                }
+
+                /* Selectbox and inputs */
+                .stSelectbox > div > div,
+                .stTextInput > div > div > input,
+                .stTextArea > div > div > textarea {
+                    background-color: #3D3D3D !important;
+                    color: #FFFFFF !important;
+                    border-color: #555555 !important;
+                }
+
+                /* Selectbox dropdown */
+                [data-baseweb="select"] {
+                    background-color: #3D3D3D !important;
+                }
+                [data-baseweb="select"] * {
+                    color: #FFFFFF !important;
+                }
+
+                /* Slider */
+                .stSlider > div > div > div {
+                    color: #FFFFFF !important;
+                }
+
+                /* Expander */
+                .streamlit-expanderHeader {
+                    background-color: #3D3D3D !important;
+                    color: #FFFFFF !important;
+                }
+                .streamlit-expanderContent {
+                    background-color: #2D2D2D !important;
+                    color: #FFFFFF !important;
+                }
+                [data-testid="stExpander"] {
+                    background-color: #2D2D2D !important;
+                    border-color: #555555 !important;
+                }
+                [data-testid="stExpander"] * {
+                    color: #FFFFFF !important;
+                }
+
+                /* Buttons */
+                .stButton > button {
+                    background-color: #4A4A4A !important;
+                    color: #FFFFFF !important;
+                    border-color: #666666 !important;
+                }
+                .stButton > button:hover {
+                    background-color: #5A5A5A !important;
+                    border-color: #888888 !important;
+                }
+
+                /* Info boxes */
+                .stAlert, [data-testid="stAlert"] {
+                    background-color: #2D4A5A !important;
+                    color: #FFFFFF !important;
+                }
+                .stAlert * {
+                    color: #FFFFFF !important;
+                }
+
+                /* Chat messages */
+                [data-testid="stChatMessage"] {
+                    background-color: #2D2D2D !important;
+                    color: #FFFFFF !important;
+                }
+                [data-testid="stChatMessage"] * {
+                    color: #FFFFFF !important;
                 }
                 .stChatMessage {
-                    background-color: #2D2D2D;
+                    background-color: #2D2D2D !important;
+                }
+
+                /* Chat input */
+                [data-testid="stChatInput"] {
+                    background-color: #3D3D3D !important;
+                }
+                [data-testid="stChatInput"] textarea {
+                    background-color: #3D3D3D !important;
+                    color: #FFFFFF !important;
+                }
+
+                /* File uploader */
+                [data-testid="stFileUploader"] {
+                    background-color: #2D2D2D !important;
+                    color: #FFFFFF !important;
+                }
+                [data-testid="stFileUploader"] * {
+                    color: #FFFFFF !important;
+                }
+                [data-testid="stFileUploader"] section {
+                    background-color: #3D3D3D !important;
+                    border-color: #555555 !important;
+                }
+
+                /* Metrics */
+                [data-testid="stMetric"] {
+                    background-color: #2D2D2D !important;
+                }
+                [data-testid="stMetric"] * {
+                    color: #FFFFFF !important;
+                }
+
+                /* Divider */
+                hr {
+                    border-color: #555555 !important;
+                }
+
+                /* Code blocks */
+                .stCodeBlock, code, pre {
+                    background-color: #1A1A1A !important;
+                    color: #E0E0E0 !important;
+                }
+
+                /* Caption text */
+                .stCaption, small {
+                    color: #AAAAAA !important;
+                }
+
+                /* Download button */
+                .stDownloadButton > button {
+                    background-color: #4A4A4A !important;
+                    color: #FFFFFF !important;
+                }
+
+                /* Checkbox */
+                .stCheckbox label span {
+                    color: #FFFFFF !important;
+                }
+
+                /* Main content area */
+                .main .block-container {
+                    color: #FFFFFF;
+                }
+
+                /* Title */
+                .stTitle, [data-testid="stTitle"] {
+                    color: #FFFFFF !important;
                 }
             </style>
         """, unsafe_allow_html=True)
@@ -399,11 +551,12 @@ with st.sidebar:
                     background-color: #FFFFFF;
                     color: #000000;
                 }
-                .stSidebar {
+                [data-testid="stSidebar"] {
                     background-color: #F0F2F6;
                 }
             </style>
         """, unsafe_allow_html=True)
+
 
     # Model selection
     model = st.selectbox(
