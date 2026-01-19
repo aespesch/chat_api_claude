@@ -6,6 +6,37 @@ import PyPDF2
 warnings.filterwarnings('ignore')
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
+# ============ PASSWORD AUTHENTICATION ============
+def check_password():
+    """Returns True if the user has entered the correct password."""
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    
+    if st.session_state.authenticated:
+        return True
+    
+    st.title("🔐 Authentication Required")
+    password = st.text_input("Enter password:", type="password", key="password_input")
+    
+    if st.button("Login", type="primary"):
+        try:
+            correct_password = st.secrets.get("PWD", "")
+            if password == correct_password and password != "":
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("⛔ Unauthorized access. Invalid password.")
+        except Exception as e:
+            st.error(f"⛔ Configuration error: {str(e)}")
+    
+    return False
+
+# Check password BEFORE any API initialization
+if not check_password():
+    st.stop()
+
+# ============ REST OF THE APPLICATION ============
+
 class APIError(Exception):
     """Custom API error class"""
     pass
@@ -401,268 +432,154 @@ with st.sidebar:
                     background-color: #1E1E1E !important;
                 }
 
-                /* Top toolbar/decoration */
-                [data-testid="stToolbar"], [data-testid="stDecoration"] {
-                    background-color: #1E1E1E !important;
-                }
-
-                /* Bottom area - fixes white rectangle at bottom */
-                [data-testid="stBottom"], .stBottom {
-                    background-color: #1E1E1E !important;
-                }
-                [data-testid="stBottomBlockContainer"] {
-                    background-color: #1E1E1E !important;
-                }
-
-                /* Main block container */
-                .block-container, [data-testid="stMainBlockContainer"] {
-                    background-color: #1E1E1E !important;
-                }
-
-                /* ===== SIDEBAR ===== */
-                [data-testid="stSidebar"], [data-testid="stSidebarContent"] {
-                    background-color: #2D2D2D !important;
+                /* Sidebar */
+                [data-testid="stSidebar"] {
+                    background-color: #252526 !important;
                     color: #FFFFFF !important;
                 }
+
                 [data-testid="stSidebar"] * {
                     color: #FFFFFF !important;
                 }
-                [data-testid="stSidebarCollapsedControl"] {
+
+                /* All text elements */
+                p, span, div, label, h1, h2, h3, h4, h5, h6 {
+                    color: #FFFFFF !important;
+                }
+
+                /* Input fields */
+                .stTextInput > div > div > input,
+                .stTextArea > div > div > textarea,
+                .stNumberInput > div > div > input {
+                    background-color: #3C3C3C !important;
+                    color: #FFFFFF !important;
+                    border-color: #555555 !important;
+                }
+
+                /* Select boxes */
+                .stSelectbox > div > div,
+                [data-testid="stSelectbox"] > div > div {
+                    background-color: #3C3C3C !important;
+                    color: #FFFFFF !important;
+                }
+
+                /* Multiselect */
+                .stMultiSelect > div > div {
+                    background-color: #3C3C3C !important;
+                    color: #FFFFFF !important;
+                }
+
+                /* Buttons */
+                .stButton > button {
+                    background-color: #0E639C !important;
+                    color: #FFFFFF !important;
+                    border: none !important;
+                }
+
+                .stButton > button:hover {
+                    background-color: #1177BB !important;
+                }
+
+                /* Download button */
+                .stDownloadButton > button {
+                    background-color: #0E639C !important;
+                    color: #FFFFFF !important;
+                }
+
+                /* Chat messages */
+                [data-testid="stChatMessage"] {
                     background-color: #2D2D2D !important;
                 }
 
-                /* ===== TEXT ELEMENTS ===== */
-                h1, h2, h3, h4, h5, h6, p, span, label, div, 
-                .stMarkdown, .stText, [data-testid="stMarkdownContainer"] {
+                [data-testid="stChatMessageContent"] {
                     color: #FFFFFF !important;
                 }
 
-                /* ===== SELECTBOX / DROPDOWN - CRITICAL FIX ===== */
-
-                /* Main selectbox container */
-                .stSelectbox > div > div,
-                [data-baseweb="select"],
-                [data-baseweb="select"] > div {
-                    background-color: #3D3D3D !important;
-                    color: #FFFFFF !important;
-                    border-color: #555555 !important;
+                /* Chat input */
+                [data-testid="stChatInput"] {
+                    background-color: #3C3C3C !important;
                 }
 
-                /* Selected value text */
-                [data-baseweb="select"] span,
-                [data-baseweb="select"] div[class*="valueContainer"] span,
-                .stSelectbox [data-baseweb="select"] span {
+                [data-testid="stChatInput"] textarea {
+                    background-color: #3C3C3C !important;
                     color: #FFFFFF !important;
                 }
 
-                /* Dropdown arrow/icon */
-                [data-baseweb="select"] svg {
-                    fill: #FFFFFF !important;
-                }
-
-                /* Dropdown menu/popover */
-                [data-baseweb="popover"],
-                [data-baseweb="menu"],
-                [data-baseweb="select"] [data-baseweb="popover"],
-                div[data-baseweb="popover"] > div,
-                ul[role="listbox"] {
-                    background-color: #3D3D3D !important;
-                    border-color: #555555 !important;
-                }
-
-                /* Dropdown menu items */
-                [data-baseweb="menu"] li,
-                [data-baseweb="menu"] ul li,
-                ul[role="listbox"] li,
-                li[role="option"],
-                [data-baseweb="menu"] [role="option"] {
-                    background-color: #3D3D3D !important;
-                    color: #FFFFFF !important;
-                }
-
-                /* Dropdown menu item text */
-                [data-baseweb="menu"] li span,
-                [data-baseweb="menu"] li div,
-                ul[role="listbox"] li span,
-                ul[role="listbox"] li div,
-                li[role="option"] span,
-                li[role="option"] div {
-                    color: #FFFFFF !important;
-                }
-
-                /* Hover state for dropdown items */
-                [data-baseweb="menu"] li:hover,
-                ul[role="listbox"] li:hover,
-                li[role="option"]:hover,
-                [data-baseweb="menu"] [role="option"]:hover {
-                    background-color: #4D4D4D !important;
-                    color: #FFFFFF !important;
-                }
-
-                /* Selected/highlighted item */
-                [data-baseweb="menu"] li[aria-selected="true"],
-                ul[role="listbox"] li[aria-selected="true"],
-                li[role="option"][aria-selected="true"],
-                [data-highlighted="true"] {
-                    background-color: #5D5D5D !important;
-                    color: #FFFFFF !important;
-                }
-
-                /* Text inputs */
-                .stTextInput > div > div > input,
-                .stTextArea > div > div > textarea,
-                input, textarea {
-                    background-color: #3D3D3D !important;
-                    color: #FFFFFF !important;
-                    border-color: #555555 !important;
-                }
-
-                /* Slider */
-                .stSlider > div > div > div {
-                    color: #FFFFFF !important;
-                }
-                .stSlider label, .stSlider [data-testid="stTickBarMin"], 
-                .stSlider [data-testid="stTickBarMax"] {
-                    color: #FFFFFF !important;
-                }
-
-                /* ===== FILE UPLOADER ===== */
+                /* File uploader */
                 [data-testid="stFileUploader"] {
                     background-color: #2D2D2D !important;
                 }
-                [data-testid="stFileUploader"] section {
-                    background-color: #2D2D2D !important;
-                    border-color: #555555 !important;
-                }
+
                 [data-testid="stFileUploader"] * {
                     color: #FFFFFF !important;
                 }
 
-                /* Browse files button */
-                [data-testid="stFileUploader"] button,
-                [data-testid="stFileUploaderDropzone"] button,
-                [data-testid="baseButton-secondary"] {
-                    background-color: #4A4A4A !important;
-                    color: #FFFFFF !important;
-                    border: 1px solid #666666 !important;
-                }
-                [data-testid="stFileUploader"] button:hover,
-                [data-testid="stFileUploaderDropzone"] button:hover {
-                    background-color: #5A5A5A !important;
-                    color: #FFFFFF !important;
-                }
-
-                /* File uploader dropzone */
-                [data-testid="stFileUploaderDropzone"] {
-                    background-color: #2D2D2D !important;
-                    border-color: #555555 !important;
-                }
-                [data-testid="stFileUploaderDropzone"] * {
-                    color: #FFFFFF !important;
-                }
-
-                /* Small text in uploader */
-                [data-testid="stFileUploader"] small,
-                [data-testid="stFileUploaderDropzone"] small {
-                    color: #AAAAAA !important;
-                }
-
-                /* ===== BUTTONS ===== */
-                .stButton > button, button[kind="secondary"], 
-                button[kind="primary"], .stDownloadButton > button {
-                    background-color: #4A4A4A !important;
-                    color: #FFFFFF !important;
-                    border-color: #666666 !important;
-                }
-                .stButton > button:hover, button:hover {
-                    background-color: #5A5A5A !important;
-                    border-color: #888888 !important;
-                    color: #FFFFFF !important;
-                }
-
-                /* ===== EXPANDERS ===== */
-                .streamlit-expanderHeader,
-                [data-testid="stExpander"] summary,
-                [data-testid="stExpander"] > details > summary {
-                    background-color: #3D3D3D !important;
-                    color: #FFFFFF !important;
-                }
-                .streamlit-expanderContent,
-                [data-testid="stExpander"] {
-                    background-color: #2D2D2D !important;
-                    border-color: #555555 !important;
-                }
-                [data-testid="stExpander"] * {
-                    color: #FFFFFF !important;
-                }
-
-                /* ===== CHAT ELEMENTS ===== */
-
-                /* Chat messages */
-                [data-testid="stChatMessage"], .stChatMessage {
+                /* Expanders */
+                .streamlit-expanderHeader {
                     background-color: #2D2D2D !important;
                     color: #FFFFFF !important;
                 }
-                [data-testid="stChatMessage"] * {
+
+                .streamlit-expanderContent {
+                    background-color: #252526 !important;
+                }
+
+                /* Metrics */
+                [data-testid="stMetric"] {
+                    background-color: #2D2D2D !important;
+                }
+
+                [data-testid="stMetricValue"] {
                     color: #FFFFFF !important;
                 }
 
-                /* Chat input container */
-                [data-testid="stChatInput"],
-                [data-testid="stChatInputContainer"],
-                .stChatInputContainer {
+                [data-testid="stMetricLabel"] {
+                    color: #CCCCCC !important;
+                }
+
+                /* Info, warning, error boxes */
+                .stAlert {
+                    background-color: #2D2D2D !important;
+                    color: #FFFFFF !important;
+                }
+
+                /* Code blocks */
+                .stCodeBlock {
                     background-color: #1E1E1E !important;
                 }
 
-                /* Chat input textarea */
-                [data-testid="stChatInput"] textarea,
-                [data-testid="stChatInputContainer"] textarea {
-                    background-color: #3D3D3D !important;
-                    color: #FFFFFF !important;
-                    border-color: #555555 !important;
+                code {
+                    background-color: #2D2D2D !important;
+                    color: #CE9178 !important;
                 }
 
-                /* Chat input wrapper */
-                [data-testid="stChatInput"] > div,
-                .stChatInput > div {
-                    background-color: #3D3D3D !important;
-                    border-color: #555555 !important;
+                pre {
+                    background-color: #1E1E1E !important;
                 }
 
-                /* Chat input cursor fix */
-                [data-testid="stChatInput"] textarea,
-                [data-testid="stChatInputContainer"] textarea,
-                .stChatInput textarea {
-                    caret-color: #FFFFFF !important;
+                /* Tables */
+                .stDataFrame {
+                    background-color: #2D2D2D !important;
                 }
 
-                /* ===== ALERTS AND INFO BOXES ===== */
-                .stAlert, [data-testid="stAlert"],
-                [data-testid="stNotification"] {
-                    background-color: #2D4A5A !important;
-                    color: #FFFFFF !important;
-                }
-                .stAlert *, [data-testid="stAlert"] * {
-                    color: #FFFFFF !important;
+                /* Sliders */
+                .stSlider > div > div > div {
+                    background-color: #0E639C !important;
                 }
 
-                /* ===== METRICS ===== */
-                [data-testid="stMetric"], [data-testid="stMetricValue"],
-                [data-testid="stMetricLabel"] {
-                    background-color: transparent !important;
+                /* Progress bar */
+                .stProgress > div > div {
+                    background-color: #0E639C !important;
+                }
+
+                /* Tabs */
+                .stTabs [data-baseweb="tab-list"] {
+                    background-color: #252526 !important;
+                }
+
+                .stTabs [data-baseweb="tab"] {
                     color: #FFFFFF !important;
                 }
-                [data-testid="stMetric"] * {
-                    color: #FFFFFF !important;
-                }
-
-                /* ===== CODE BLOCKS ===== */
-                .stCodeBlock, code, pre, [data-testid="stCode"] {
-                    background-color: #1A1A1A !important;
-                    color: #E0E0E0 !important;
-                }
-
-                /* ===== MISC ELEMENTS ===== */
 
                 /* Dividers */
                 hr, [data-testid="stHorizontalBlock"] {
