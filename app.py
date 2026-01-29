@@ -11,13 +11,13 @@ def check_password():
     """Returns True if the user has entered the correct password."""
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
-    
+
     if st.session_state.authenticated:
         return True
-    
+
     st.title("🔐 Authentication Required")
     password = st.text_input("Enter password:", type="password", key="password_input")
-    
+
     if st.button("Login", type="primary"):
         try:
             correct_password = st.secrets.get("PWD", "")
@@ -28,7 +28,7 @@ def check_password():
                 st.error("⛔ Unauthorized access. Invalid password.")
         except Exception as e:
             st.error(f"⛔ Configuration error: {str(e)}")
-    
+
     return False
 
 # Check password BEFORE any API initialization
@@ -281,14 +281,20 @@ def render_mermaid(mermaid_code, key=None):
 
     st_html(mermaid_html, height=400, scrolling=True)
 
-def render_message_with_mermaid(content):
-    """Render message, processing Mermaid diagrams separately"""
+def render_message_with_mermaid(content, render_diagrams=True):
+    """Render message, processing Mermaid diagrams based on toggle setting"""
     mermaid_diagrams = extract_mermaid_diagrams(content)
 
     if not mermaid_diagrams:
         st.markdown(content)
         return
 
+    # If Mermaid rendering is disabled, show the original content with code blocks
+    if not render_diagrams:
+        st.markdown(content)
+        return
+
+    # If Mermaid rendering is enabled, render diagrams visually
     parts = re.split(r'```mermaid\s*\n.*?```', content, flags=re.DOTALL)
 
     for i, part in enumerate(parts):
@@ -299,12 +305,12 @@ def render_message_with_mermaid(content):
             st.markdown("**📊 Diagram:**")
             render_mermaid(mermaid_diagrams[i], key=f"mermaid_{i}_{hash(content)}")
 
-def display_message_with_metadata(message, idx):
+def display_message_with_metadata(message, idx, render_mermaid_diagrams=True):
     """Display message with useful metadata"""
     col1, col2, col3 = st.columns([8, 1, 1])
 
     with col1:
-        render_message_with_mermaid(message['content'])
+        render_message_with_mermaid(message['content'], render_mermaid_diagrams)
 
     with col2:
         token_count = estimate_tokens(message['content'])
@@ -395,6 +401,8 @@ if 'theme' not in st.session_state:
     st.session_state.theme = "Light"
 if 'system_prompt' not in st.session_state:
     st.session_state.system_prompt = "You are a helpful and accurate assistant."
+if 'enable_mermaid' not in st.session_state:
+    st.session_state.enable_mermaid = True
 
 # Sidebar
 with st.sidebar:
@@ -664,6 +672,10 @@ with st.sidebar:
     use_streaming = st.checkbox("🔄 Enable Streaming", value=True, 
                                 help="See response in real time (recommended for long responses)")
 
+    enable_mermaid = st.checkbox("📊 Enable Mermaid Diagrams", value=st.session_state.enable_mermaid,
+                                 help="When enabled, renders Mermaid diagrams visually. When disabled, shows the source code.")
+    st.session_state.enable_mermaid = enable_mermaid
+
     # System Prompt Customization
     with st.expander("📝 System Prompt"):
         st.session_state.system_prompt = st.text_area(
@@ -735,11 +747,6 @@ with st.sidebar:
             else: 
                 st.warning("No messages to copy")
 
-    # Mermaid info
-    st.divider()
-    st.markdown("### 📊 Mermaid Support")
-    st.info("This chat supports Mermaid diagram rendering! Ask Claude to create diagrams using ```mermaid``` syntax")
-
 # Main chat interface
 st.title("🤖 Claude Chat")
 
@@ -756,7 +763,7 @@ if template:
 # Display chat history with metadata
 for idx, m in enumerate(st.session_state.msgs): 
     with st.chat_message(m["role"]):
-        display_message_with_metadata(m, idx)
+        display_message_with_metadata(m, idx, st.session_state.enable_mermaid)
 
 # File uploader with extended support
 files = st.file_uploader(
@@ -791,7 +798,7 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else te
                 message_placeholder.markdown(full_response + "▼")
 
             message_placeholder.empty()
-            render_message_with_mermaid(full_response)
+            render_message_with_mermaid(full_response, st.session_state.enable_mermaid)
             resp = full_response
         else:
             with st.spinner("Thinking..."):
@@ -802,6 +809,6 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else te
                     full_response += chunk
                 resp = full_response
 
-            render_message_with_mermaid(resp)
+            render_message_with_mermaid(resp, st.session_state.enable_mermaid)
 
         st.session_state.msgs.append({"role": "assistant", "content": resp})
