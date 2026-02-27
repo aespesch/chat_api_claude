@@ -769,6 +769,29 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else te
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # Handle /model command - verify actual model via API
+    if prompt.strip().lower() == "/model":
+        with st.chat_message("assistant"):
+            try:
+                test_resp = st.session_state.api.client.messages.create(
+                    model=model,
+                    max_tokens=1,
+                    messages=[{"role": "user", "content": "Hi"}]
+                )
+                actual_model = test_resp.model
+                expected_label = ClaudeAPI.MODELS.get(model, model)
+                match = "✅ Modelos coincidem!" if model in actual_model else "⚠️ Modelos DIFERENTES!"
+                resp = (
+                    f"🤖 **Selecionado na UI:** {expected_label} (`{model}`)\n\n"
+                    f"🔍 **Retornado pela API:** `{actual_model}`\n\n"
+                    f"{match}"
+                )
+            except Exception as e:
+                resp = f"❌ Erro ao verificar modelo: {e}"
+            st.markdown(resp)
+        st.session_state.msgs.append({"role": "assistant", "content": resp})
+        st.stop()
+        
     with st.chat_message("assistant"):
         history = [
             {"role": m["role"], "content": m["content"]} 
