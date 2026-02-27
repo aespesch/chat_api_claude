@@ -43,27 +43,15 @@ class APIError(Exception):
 
 class ClaudeAPI:
     MODELS = {
-        "claude-opus-4-5-20251101": "Claude Opus 4.5 (Most Advanced and Intelligent)",
-        "claude-sonnet-4-5-20250929": "Claude Sonnet 4.5 (Smarter for Agents and Coding)",
-        "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (Fastest, Near-Frontier Intelligence)",
-        "claude-opus-4-1-20250805": "Claude Opus 4.1 (Exceptional for Specialized Reasoning)",
-        "claude-sonnet-4-20250514": "Claude Sonnet 4 (Legacy)",
-        "claude-3-7-sonnet-20250219": "Claude 3.7 Sonnet (Legacy)",
-        "claude-opus-4-20250514": "Claude Opus 4 (Legacy)",
-        "claude-3-5-haiku-20241022": "Claude 3.5 Haiku (Legacy)",
-        "claude-3-haiku-20240307": "Claude 3 Haiku (Legacy)",
+        "claude-opus-4-6": "Claude Opus 4.6 (Most Intelligent)",
+        "claude-sonnet-4-6": "Claude Sonnet 4.6 (Best Speed/Intelligence)",
+        "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (Fastest)",
     }
 
     MODEL_MAX_TOKENS = {
-        "claude-opus-4-5-20251101": 64000,
-        "claude-sonnet-4-5-20250929": 64000,
+        "claude-opus-4-6": 128000,
+        "claude-sonnet-4-6": 64000,
         "claude-haiku-4-5-20251001": 64000,
-        "claude-opus-4-1-20250805": 32000,
-        "claude-sonnet-4-20250514": 64000,
-        "claude-opus-4-20250514": 32000,
-        "claude-3-7-sonnet-20250219": 131072,
-        "claude-3-5-haiku-20241022": 8192,
-        "claude-3-haiku-20240307": 4096,
     }
 
     PROMPT_TEMPLATES = {
@@ -123,7 +111,7 @@ class ClaudeAPI:
         """Validate API key with minimal call"""
         try:
             self.client.messages.create(
-                model="claude-3-haiku-20240307",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=1,
                 messages=[{"role": "user", "content": "Hi"}]
             )
