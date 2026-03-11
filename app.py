@@ -1,20 +1,71 @@
 import os, streamlit as st, anthropic, base64, warnings, re, json, html, io, hashlib
 from pathlib import Path
 from streamlit.components.v1 import html as st_html
-from datetime import datetime
+from datetime import datetime, timedelta
 import PyPDF2
+import extra_streamlit_components as stx
+
 warnings.filterwarnings('ignore')
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
-# ============ PASSWORD AUTHENTICATION ============
-def check_password():
-    """Returns True if the user has entered the correct password."""
-    if 'authenticated' not in st.session_state:
-        st.session_state.authenticated = False
+# ============ COOKIE-BASED PERSISTENT AUTHENTICATION (48h) ============
 
-    if st.session_state.authenticated:
+COOKIE_NAME = "claude_chat_auth"
+COOKIE_EXPIRY_DAYS = 2  # 48 horas
+
+def get_cookie_manager():
+    """Returns a singleton cookie manager instance."""
+    return stx.CookieManager(key="cookie_manager_singleton")
+
+
+def generate_auth_token(password: str) -> str:
+    """
+    Generates a deterministic auth token from the password + a secret salt.
+    This token is stored in the cookie to validate future sessions.
+    """
+    salt = st.secrets.get("COOKIE_SECRET", "claude-chat-default-salt-change-me")
+    raw = f"{password}:{salt}:claude-chat-persistent"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def check_password():
+    """
+    Returns True if the user is authenticated.
+    Authentication persists for 48h via a browser cookie.
+    """
+    cookie_manager = get_cookie_manager()
+
+    # 1) Check in-memory session first (fastest path)
+    if st.session_state.get("authenticated"):
         return True
 
+    # 2) Check cookie for persisted session
+    auth_cookie = cookie_manager.get(COOKIE_NAME)
+
+    if auth_cookie is not None:
+        try:
+            cookie_data = json.loads(auth_cookie)
+            stored_token = cookie_data.get("token", "")
+            expiry_str = cookie_data.get("expiry", "")
+
+            if expiry_str:
+                expiry_dt = datetime.fromisoformat(expiry_str)
+                if datetime.now() < expiry_dt:
+                    # Validate the token against the current password
+                    correct_password = st.secrets.get("PWD", "")
+                    expected_token = generate_auth_token(correct_password)
+
+                    if stored_token == expected_token:
+                        st.session_state.authenticated = True
+                        return True
+
+            # Cookie expired or invalid — remove it
+            cookie_manager.delete(COOKIE_NAME)
+        except (json.JSONDecodeError, ValueError, KeyError):
+            # Malformed cookie — remove it
+            cookie_manager.delete(COOKIE_NAME)
+
+    # 3) Not authenticated — show login form
     st.title("🔐 Authentication Required")
     password = st.text_input("Enter password:", type="password", key="password_input")
 
@@ -22,6 +73,19 @@ def check_password():
         try:
             correct_password = st.secrets.get("PWD", "")
             if password == correct_password and password != "":
+                # Generate token and set cookie for 48h
+                token = generate_auth_token(password)
+                expiry = datetime.now() + timedelta(days=COOKIE_EXPIRY_DAYS)
+                cookie_value = json.dumps({
+                    "token": token,
+                    "expiry": expiry.isoformat()
+                })
+                cookie_manager.set(
+                    COOKIE_NAME,
+                    cookie_value,
+                    expires_at=expiry,
+                    key="set_auth_cookie"
+                )
                 st.session_state.authenticated = True
                 st.rerun()
             else:
@@ -30,6 +94,7 @@ def check_password():
             st.error(f"⛔ Configuration error: {str(e)}")
 
     return False
+
 
 # Check password BEFORE any API initialization
 if not check_password():
@@ -277,12 +342,10 @@ def render_message_with_mermaid(content, render_diagrams=True):
         st.markdown(content)
         return
 
-    # If Mermaid rendering is disabled, show the original content with code blocks
     if not render_diagrams:
         st.markdown(content)
         return
 
-    # If Mermaid rendering is enabled, render diagrams visually
     parts = re.split(r'```mermaid\s*\n.*?```', content, flags=re.DOTALL)
 
     for i, part in enumerate(parts):
@@ -399,238 +462,72 @@ with st.sidebar:
     # Theme
     theme = st.selectbox("🎨 Theme", ["Light", "Dark", "Auto"], key="theme_selector")
 
-    # Aplicar tema imediatamente quando selecionado
     if theme != st.session_state.get('theme'):
         st.session_state.theme = theme
 
-    # CSS para aplicar o tema
     if st.session_state.theme == "Dark":
         st.markdown("""
             <style>
-                /* ===== GLOBAL DARK THEME ===== */
-
-                /* Root and main containers */
-                :root {
-                    color-scheme: dark;
-                }
-
+                :root { color-scheme: dark; }
                 .stApp, .main, [data-testid="stAppViewContainer"] {
-                    background-color: #1E1E1E !important;
-                    color: #FFFFFF !important;
+                    background-color: #1E1E1E !important; color: #FFFFFF !important;
                 }
-
-                /* Header area - fixes white rectangle at top */
                 header, [data-testid="stHeader"], .stAppHeader {
-                    background-color: #1E1E1E !important;
-                    color: #FFFFFF !important;
+                    background-color: #1E1E1E !important; color: #FFFFFF !important;
                 }
-                header[data-testid="stHeader"] {
-                    background-color: #1E1E1E !important;
-                }
-
-                /* Sidebar */
-                [data-testid="stSidebar"] {
-                    background-color: #252526 !important;
-                    color: #FFFFFF !important;
-                }
-
-                [data-testid="stSidebar"] * {
-                    color: #FFFFFF !important;
-                }
-
-                /* All text elements */
-                p, span, div, label, h1, h2, h3, h4, h5, h6 {
-                    color: #FFFFFF !important;
-                }
-
-                /* Input fields */
+                header[data-testid="stHeader"] { background-color: #1E1E1E !important; }
+                [data-testid="stSidebar"] { background-color: #252526 !important; color: #FFFFFF !important; }
+                [data-testid="stSidebar"] * { color: #FFFFFF !important; }
+                p, span, div, label, h1, h2, h3, h4, h5, h6 { color: #FFFFFF !important; }
                 .stTextInput > div > div > input,
                 .stTextArea > div > div > textarea,
                 .stNumberInput > div > div > input {
-                    background-color: #3C3C3C !important;
-                    color: #FFFFFF !important;
-                    border-color: #555555 !important;
+                    background-color: #3C3C3C !important; color: #FFFFFF !important; border-color: #555555 !important;
                 }
-
-                /* Select boxes */
-                .stSelectbox > div > div,
-                [data-testid="stSelectbox"] > div > div {
-                    background-color: #3C3C3C !important;
-                    color: #FFFFFF !important;
+                .stSelectbox > div > div, [data-testid="stSelectbox"] > div > div {
+                    background-color: #3C3C3C !important; color: #FFFFFF !important;
                 }
-
-                /* Multiselect */
-                .stMultiSelect > div > div {
-                    background-color: #3C3C3C !important;
-                    color: #FFFFFF !important;
-                }
-
-                /* Buttons */
-                .stButton > button {
-                    background-color: #0E639C !important;
-                    color: #FFFFFF !important;
-                    border: none !important;
-                }
-
-                .stButton > button:hover {
-                    background-color: #1177BB !important;
-                }
-
-                /* Download button */
-                .stDownloadButton > button {
-                    background-color: #0E639C !important;
-                    color: #FFFFFF !important;
-                }
-
-                /* Chat messages */
-                [data-testid="stChatMessage"] {
-                    background-color: #2D2D2D !important;
-                }
-
-                [data-testid="stChatMessageContent"] {
-                    color: #FFFFFF !important;
-                }
-
-                /* Chat input */
-                [data-testid="stChatInput"] {
-                    background-color: #3C3C3C !important;
-                }
-
-                [data-testid="stChatInput"] textarea {
-                    background-color: #3C3C3C !important;
-                    color: #FFFFFF !important;
-                }
-
-                /* File uploader */
-                [data-testid="stFileUploader"] {
-                    background-color: #2D2D2D !important;
-                }
-
-                [data-testid="stFileUploader"] * {
-                    color: #FFFFFF !important;
-                }
-
-                /* Expanders */
-                .streamlit-expanderHeader {
-                    background-color: #2D2D2D !important;
-                    color: #FFFFFF !important;
-                }
-
-                .streamlit-expanderContent {
-                    background-color: #252526 !important;
-                }
-
-                /* Metrics */
-                [data-testid="stMetric"] {
-                    background-color: #2D2D2D !important;
-                }
-
-                [data-testid="stMetricValue"] {
-                    color: #FFFFFF !important;
-                }
-
-                [data-testid="stMetricLabel"] {
-                    color: #CCCCCC !important;
-                }
-
-                /* Info, warning, error boxes */
-                .stAlert {
-                    background-color: #2D2D2D !important;
-                    color: #FFFFFF !important;
-                }
-
-                /* Code blocks */
-                .stCodeBlock {
-                    background-color: #1E1E1E !important;
-                }
-
-                code {
-                    background-color: #2D2D2D !important;
-                    color: #CE9178 !important;
-                }
-
-                pre {
-                    background-color: #1E1E1E !important;
-                }
-
-                /* Tables */
-                .stDataFrame {
-                    background-color: #2D2D2D !important;
-                }
-
-                /* Sliders */
-                .stSlider > div > div > div {
-                    background-color: #0E639C !important;
-                }
-
-                /* Progress bar */
-                .stProgress > div > div {
-                    background-color: #0E639C !important;
-                }
-
-                /* Tabs */
-                .stTabs [data-baseweb="tab-list"] {
-                    background-color: #252526 !important;
-                }
-
-                .stTabs [data-baseweb="tab"] {
-                    color: #FFFFFF !important;
-                }
-
-                /* Dividers */
-                hr, [data-testid="stHorizontalBlock"] {
-                    border-color: #555555 !important;
-                }
-
-                /* Captions */
-                .stCaption, small, figcaption {
-                    color: #AAAAAA !important;
-                }
-
-                /* Checkboxes */
-                .stCheckbox label span {
-                    color: #FFFFFF !important;
-                }
-
-                /* Links */
-                a {
-                    color: #6CB4EE !important;
-                }
-
-                /* Tooltips */
-                [data-testid="stTooltipIcon"] {
-                    color: #AAAAAA !important;
-                }
-
-                /* Charts background */
-                [data-testid="stVegaLiteChart"] {
-                    background-color: #2D2D2D !important;
-                }
-
-                /* Empty state */
-                [data-testid="stEmpty"] {
-                    background-color: #1E1E1E !important;
-                }
-
-                /* Spinner */
-                .stSpinner > div {
-                    border-color: #FFFFFF transparent transparent transparent !important;
-                }
+                .stMultiSelect > div > div { background-color: #3C3C3C !important; color: #FFFFFF !important; }
+                .stButton > button { background-color: #0E639C !important; color: #FFFFFF !important; border: none !important; }
+                .stButton > button:hover { background-color: #1177BB !important; }
+                .stDownloadButton > button { background-color: #0E639C !important; color: #FFFFFF !important; }
+                [data-testid="stChatMessage"] { background-color: #2D2D2D !important; }
+                [data-testid="stChatMessageContent"] { color: #FFFFFF !important; }
+                [data-testid="stChatInput"] { background-color: #3C3C3C !important; }
+                [data-testid="stChatInput"] textarea { background-color: #3C3C3C !important; color: #FFFFFF !important; }
+                [data-testid="stFileUploader"] { background-color: #2D2D2D !important; }
+                [data-testid="stFileUploader"] * { color: #FFFFFF !important; }
+                .streamlit-expanderHeader { background-color: #2D2D2D !important; color: #FFFFFF !important; }
+                .streamlit-expanderContent { background-color: #252526 !important; }
+                [data-testid="stMetric"] { background-color: #2D2D2D !important; }
+                [data-testid="stMetricValue"] { color: #FFFFFF !important; }
+                [data-testid="stMetricLabel"] { color: #CCCCCC !important; }
+                .stAlert { background-color: #2D2D2D !important; color: #FFFFFF !important; }
+                .stCodeBlock { background-color: #1E1E1E !important; }
+                code { background-color: #2D2D2D !important; color: #CE9178 !important; }
+                pre { background-color: #1E1E1E !important; }
+                .stDataFrame { background-color: #2D2D2D !important; }
+                .stSlider > div > div > div { background-color: #0E639C !important; }
+                .stProgress > div > div { background-color: #0E639C !important; }
+                .stTabs [data-baseweb="tab-list"] { background-color: #252526 !important; }
+                .stTabs [data-baseweb="tab"] { color: #FFFFFF !important; }
+                hr, [data-testid="stHorizontalBlock"] { border-color: #555555 !important; }
+                .stCaption, small, figcaption { color: #AAAAAA !important; }
+                .stCheckbox label span { color: #FFFFFF !important; }
+                a { color: #6CB4EE !important; }
+                [data-testid="stTooltipIcon"] { color: #AAAAAA !important; }
+                [data-testid="stVegaLiteChart"] { background-color: #2D2D2D !important; }
+                [data-testid="stEmpty"] { background-color: #1E1E1E !important; }
+                .stSpinner > div { border-color: #FFFFFF transparent transparent transparent !important; }
             </style>
         """, unsafe_allow_html=True)
     elif st.session_state.theme == "Light":
         st.markdown("""
             <style>
-                .stApp {
-                    background-color: #FFFFFF;
-                    color: #000000;
-                }
-                [data-testid="stSidebar"] {
-                    background-color: #F0F2F6;
-                }
+                .stApp { background-color: #FFFFFF; color: #000000; }
+                [data-testid="stSidebar"] { background-color: #F0F2F6; }
             </style>
         """, unsafe_allow_html=True)
-
 
     # Model selection
     model = st.selectbox(
@@ -735,6 +632,15 @@ with st.sidebar:
             else: 
                 st.warning("No messages to copy")
 
+    # Logout button
+    st.divider()
+    if st.button("🚪 Logout", use_container_width=True):
+        cookie_manager = get_cookie_manager()
+        cookie_manager.delete(COOKIE_NAME, key="delete_auth_cookie_logout")
+        st.session_state.authenticated = False
+        st.session_state.msgs = []
+        st.rerun()
+
 # Main chat interface
 st.title("🤖 Claude Chat")
 
@@ -769,7 +675,7 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else te
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Handle /model command - verify actual model via API
+    # Handle /model command
     if prompt.strip().lower() == "/model":
         with st.chat_message("assistant"):
             try:
@@ -791,7 +697,7 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else te
             st.markdown(resp)
         st.session_state.msgs.append({"role": "assistant", "content": resp})
         st.stop()
-        
+
     with st.chat_message("assistant"):
         history = [
             {"role": m["role"], "content": m["content"]} 
