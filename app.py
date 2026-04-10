@@ -8,10 +8,16 @@ import extra_streamlit_components as stx
 warnings.filterwarnings('ignore')
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
-# ============ COOKIE-BASED PERSISTENT AUTHENTICATION (48h) ============
+# ============ CONSTANTS ============
 
 COOKIE_NAME = "claude_chat_auth"
-COOKIE_EXPIRY_DAYS = 2  # 48 horas
+COOKIE_EXPIRY_DAYS = 2  # 48 hours
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MERMAID_PATTERN = r'```mermaid\s*\n(.*?)```'       # for re.findall — extracts diagram content
+MERMAID_SPLIT_PATTERN = r'```mermaid\s*\n.*?```'   # for re.split  — splits text around blocks
+
+# ============ COOKIE-BASED PERSISTENT AUTHENTICATION (48h) ============
 
 def get_cookie_manager():
     """Returns a singleton cookie manager instance."""
@@ -176,7 +182,7 @@ class ClaudeAPI:
         """Validate API key with minimal call"""
         try:
             self.client.messages.create(
-                model="claude-haiku-4-5-20251001",
+                model=DEFAULT_MODEL,
                 max_tokens=1,
                 messages=[{"role": "user", "content": "Hi"}]
             )
@@ -186,7 +192,7 @@ class ClaudeAPI:
 
     def send_message_stream(self, msg, model, temp=0.7, max_t=2000, hist=None, files=None, system_prompt=None):
         """Stream version that returns a generator"""
-        if not self.client: 
+        if not self.client:
             yield "❌ API key not configured"
             return
 
@@ -246,26 +252,30 @@ def sanitize_input(text):
 
 def validate_file(file):
     """Validate file before processing"""
-    MAX_SIZE = 10 * 1024 * 1024
-
-    if file.size > MAX_SIZE:
+    if file.size > MAX_FILE_SIZE:
         raise ValueError(f"File too large: {file.size/1024/1024:.1f}MB")
-
     return True
 
 FILE_PROCESSORS = {
-    '.pdf': lambda f: {"type": "text", "text": f"\n📄 {f.name} (PDF):\n```\n{extract_text_from_pdf_cached(f.read())}\n```"},
+    '.pdf':  lambda f: {"type": "text", "text": f"\n📄 {f.name} (PDF):\n```\n{extract_text_from_pdf_cached(f.read())}\n```"},
     '.xlsx': lambda f: {"type": "text", "text": f"\n📄 {f.name}: Excel file processing not implemented\n"},
     '.docx': lambda f: {"type": "text", "text": f"\n📄 {f.name}: Word file processing not implemented\n"},
-    '.ipynb': lambda f: {"type": "text", "text": f"\n📄 {f.name}: Jupyter notebook processing not implemented\n"},
-    '.zip': lambda f: {"type": "text", "text": f"\n📄 {f.name}: ZIP file processing not implemented\n"},
+    '.ipynb':lambda f: {"type": "text", "text": f"\n📄 {f.name}: Jupyter notebook processing not implemented\n"},
+    '.zip':  lambda f: {"type": "text", "text": f"\n📄 {f.name}: ZIP file processing not implemented\n"},
+}
+
+TEXT_EXTENSIONS = ['.txt','.py','.csv','.md','.json','.php','.cfg','.sql','.js','.html','.css','.xml','.yml','.yaml']
+
+LANG_MAP = {
+    '.php': 'php', '.sql': 'sql', '.py': 'python',
+    '.json': 'json', '.js': 'javascript', '.html': 'html',
+    '.css': 'css', '.xml': 'xml', '.yml': 'yaml', '.yaml': 'yaml'
 }
 
 def process_file(file):
     """Universal file processor"""
     validate_file(file)
     extension = Path(file.name).suffix.lower()
-    fname = file.name.lower()
 
     if file.type.startswith('image/'):
         file.seek(0)
@@ -282,16 +292,10 @@ def process_file(file):
         file.seek(0)
         return FILE_PROCESSORS[extension](file)
 
-    text_extensions = ['.txt','.py','.csv','.md','.json','.php','.cfg','.sql','.js','.html','.css','.xml','.yml','.yaml']
-    if extension in text_extensions:
+    if extension in TEXT_EXTENSIONS:
         file.seek(0)
         text_content = file.read().decode('utf-8', errors='ignore')
-        lang_map = {
-            '.php': 'php', '.sql': 'sql', '.py': 'python',
-            '.json': 'json', '.js': 'javascript', '.html': 'html',
-            '.css': 'css', '.xml': 'xml', '.yml': 'yaml', '.yaml': 'yaml'
-        }
-        lang = lang_map.get(extension, '')
+        lang = LANG_MAP.get(extension, '')
         return {"type": "text", "text": f"\n📄 {file.name}:\n```{lang}\n{text_content}\n```"}
 
     return None
@@ -302,14 +306,10 @@ def estimate_tokens(text):
 
 def extract_mermaid_diagrams(text):
     """Extract all Mermaid diagrams from text"""
-    pattern = r'```mermaid\s*\n(.*?)```'
-    matches = re.findall(pattern, text, re.DOTALL)
-    return matches
+    return re.findall(MERMAID_PATTERN, text, re.DOTALL)
 
 def render_mermaid(mermaid_code, key=None):
     """Render Mermaid diagram using HTML and JavaScript"""
-    mermaid_code_escaped = mermaid_code.replace('`', '\\`').replace('$', '\\$')
-
     mermaid_html = f"""
     <div class="mermaid-container" style="background: white; padding: 20px; border-radius: 8px; margin: 10px 0;">
         <div class="mermaid">
@@ -319,7 +319,7 @@ def render_mermaid(mermaid_code, key=None):
 
     <script type="module">
         import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
-        mermaid.initialize({{ 
+        mermaid.initialize({{
             startOnLoad: true,
             theme: 'default',
             securityLevel: 'loose',
@@ -338,15 +338,11 @@ def render_message_with_mermaid(content, render_diagrams=True):
     """Render message, processing Mermaid diagrams based on toggle setting"""
     mermaid_diagrams = extract_mermaid_diagrams(content)
 
-    if not mermaid_diagrams:
+    if not mermaid_diagrams or not render_diagrams:
         st.markdown(content)
         return
 
-    if not render_diagrams:
-        st.markdown(content)
-        return
-
-    parts = re.split(r'```mermaid\s*\n.*?```', content, flags=re.DOTALL)
+    parts = re.split(MERMAID_SPLIT_PATTERN, content, flags=re.DOTALL)
 
     for i, part in enumerate(parts):
         if part.strip():
@@ -380,16 +376,11 @@ def save_conversation():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"chat_{timestamp}.json"
 
-    conversation_data = {
+    st.session_state.saved_conversations[filename] = {
         "timestamp": timestamp,
         "messages": st.session_state.msgs,
         "model": st.session_state.selected_model
     }
-
-    if 'saved_conversations' not in st.session_state:
-        st.session_state.saved_conversations = {}
-
-    st.session_state.saved_conversations[filename] = conversation_data
     st.success(f"Conversation saved as {filename}")
 
 def load_conversation(filename):
@@ -397,15 +388,13 @@ def load_conversation(filename):
     if filename in st.session_state.saved_conversations:
         data = st.session_state.saved_conversations[filename]
         st.session_state.msgs = data["messages"]
-        st.session_state.selected_model = data.get("model", list(ClaudeAPI.MODELS.keys())[0])
+        st.session_state.selected_model = data.get("model", DEFAULT_MODEL)
         st.success("Conversation loaded")
         st.rerun()
 
 def list_saved_conversations():
     """List all saved conversations"""
-    if 'saved_conversations' in st.session_state:
-        return list(st.session_state.saved_conversations.keys())
-    return []
+    return list(st.session_state.saved_conversations.keys())
 
 def export_conversation(format_type="Markdown"):
     """Export conversation in different formats"""
@@ -442,18 +431,20 @@ def create_usage_dataframe(messages):
     return pd.DataFrame(data)
 
 # Initialize session state
-if 'msgs' not in st.session_state: 
+if 'msgs' not in st.session_state:
     st.session_state.msgs = []
-if 'api' not in st.session_state: 
+if 'api' not in st.session_state:
     st.session_state.api = ClaudeAPI()
 if 'selected_model' not in st.session_state:
-    st.session_state.selected_model = list(ClaudeAPI.MODELS.keys())[0]
+    st.session_state.selected_model = DEFAULT_MODEL
 if 'theme' not in st.session_state:
     st.session_state.theme = "Light"
 if 'system_prompt' not in st.session_state:
     st.session_state.system_prompt = "You are a helpful and accurate assistant."
 if 'enable_mermaid' not in st.session_state:
     st.session_state.enable_mermaid = True
+if 'saved_conversations' not in st.session_state:
+    st.session_state.saved_conversations = {}
 
 # Sidebar
 with st.sidebar:
@@ -531,8 +522,8 @@ with st.sidebar:
 
     # Model selection
     model = st.selectbox(
-        "Model", 
-        list(ClaudeAPI.MODELS.keys()), 
+        "Model",
+        list(ClaudeAPI.MODELS.keys()),
         format_func=lambda x: ClaudeAPI.MODELS[x],
         key='model_selector'
     )
@@ -547,14 +538,14 @@ with st.sidebar:
     # Parameters
     temp = st.slider("Temperature", 0.0, 1.0, 0.5, 0.1)
     max_t = st.slider(
-        "Max Tokens", 
-        100, 
-        max_tokens_limit, 
+        "Max Tokens",
+        100,
+        max_tokens_limit,
         max_tokens_limit,
         100
     )
 
-    use_streaming = st.checkbox("🔄 Enable Streaming", value=True, 
+    use_streaming = st.checkbox("🔄 Enable Streaming", value=True,
                                 help="See response in real time (recommended for long responses)")
 
     enable_mermaid = st.checkbox("📊 Enable Mermaid Diagrams", value=st.session_state.enable_mermaid,
@@ -618,18 +609,18 @@ with st.sidebar:
     st.divider()
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🗑️ Clear", use_container_width=True): 
+        if st.button("🗑️ Clear", use_container_width=True):
             st.session_state.msgs = []
             st.rerun()
     with col2:
         if st.button("📋 Copy All", use_container_width=True):
             if st.session_state.msgs:
                 chat_text = "\n\n".join([
-                    f"**{m['role'].title()}**: {m['content']}" 
+                    f"**{m['role'].title()}**: {m['content']}"
                     for m in st.session_state.msgs
                 ])
                 st.text_area("Copy this text:", chat_text, height=200)
-            else: 
+            else:
                 st.warning("No messages to copy")
 
     # Logout button
@@ -655,14 +646,14 @@ if template:
     st.info(f"Template: {template_prompt}")
 
 # Display chat history with metadata
-for idx, m in enumerate(st.session_state.msgs): 
+for idx, m in enumerate(st.session_state.msgs):
     with st.chat_message(m["role"]):
         display_message_with_metadata(m, idx, st.session_state.enable_mermaid)
 
 # File uploader with extended support
 files = st.file_uploader(
-    "📎 Attach files", 
-    accept_multiple_files=True, 
+    "📎 Attach files",
+    accept_multiple_files=True,
     type=['png','jpg','jpeg','txt','py','csv','md','json','cfg','php','sql','pdf','js','html','css','xml','yml','yaml','xlsx','docx','ipynb','zip']
 )
 
@@ -686,31 +677,30 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else te
                 )
                 actual_model = test_resp.model
                 expected_label = ClaudeAPI.MODELS.get(model, model)
-                match = "✅ Modelos coincidem!" if model in actual_model else "⚠️ Modelos DIFERENTES!"
+                match = "✅ Models match!" if model in actual_model else "⚠️ Models DIFFER!"
                 resp = (
-                    f"🤖 **Selecionado na UI:** {expected_label} (`{model}`)\n\n"
-                    f"🔍 **Retornado pela API:** `{actual_model}`\n\n"
+                    f"🤖 **Selected in UI:** {expected_label} (`{model}`)\n\n"
+                    f"🔍 **Returned by API:** `{actual_model}`\n\n"
                     f"{match}"
                 )
             except Exception as e:
-                resp = f"❌ Erro ao verificar modelo: {e}"
+                resp = f"❌ Error checking model: {e}"
             st.markdown(resp)
         st.session_state.msgs.append({"role": "assistant", "content": resp})
         st.stop()
 
     with st.chat_message("assistant"):
         history = [
-            {"role": m["role"], "content": m["content"]} 
+            {"role": m["role"], "content": m["content"]}
             for m in st.session_state.msgs[:-1]
         ]
+        stream_args = (prompt, model, temp, max_t, history, files, st.session_state.system_prompt)
 
         if use_streaming:
             message_placeholder = st.empty()
             full_response = ""
 
-            for chunk in st.session_state.api.send_message_stream(
-                prompt, model, temp, max_t, history, files, st.session_state.system_prompt
-            ):
+            for chunk in st.session_state.api.send_message_stream(*stream_args):
                 full_response += chunk
                 message_placeholder.markdown(full_response + "▼")
 
@@ -719,12 +709,7 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else te
             resp = full_response
         else:
             with st.spinner("Thinking..."):
-                full_response = ""
-                for chunk in st.session_state.api.send_message_stream(
-                    prompt, model, temp, max_t, history, files, st.session_state.system_prompt
-                ):
-                    full_response += chunk
-                resp = full_response
+                resp = "".join(st.session_state.api.send_message_stream(*stream_args))
 
             render_message_with_mermaid(resp, st.session_state.enable_mermaid)
 
