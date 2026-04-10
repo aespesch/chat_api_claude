@@ -43,16 +43,3 @@ gatherUsageStats = false
 [runner]
 # Magic commands
 magicEnabled = true
-
-# Install packages automatically
-installTracer = false
-
-[client]
-# Show error details
-showErrorDetails = true
-
-# Caching
-caching = true
-
-# Display tooltips
-displayEnabled = true
