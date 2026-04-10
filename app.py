@@ -10,12 +10,16 @@ st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
 # ============ CONSTANTS ============
 
+APP_VERSION = "1.1.0"
 COOKIE_NAME = "claude_chat_auth"
 COOKIE_EXPIRY_DAYS = 2  # 48 hours
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 MERMAID_PATTERN = r'```mermaid\s*\n(.*?)```'       # for re.findall — extracts diagram content
 MERMAID_SPLIT_PATTERN = r'```mermaid\s*\n.*?```'   # for re.split  — splits text around blocks
+
+# Startup log — visible in Streamlit Cloud logs
+print(f"🚀 Loading Claude Chat v{APP_VERSION} | Default model: {DEFAULT_MODEL}")
 
 # ============ COOKIE-BASED PERSISTENT AUTHENTICATION (48h) ============
 
@@ -438,6 +442,8 @@ if 'api' not in st.session_state:
     st.session_state.api = ClaudeAPI()
 if 'selected_model' not in st.session_state:
     st.session_state.selected_model = DEFAULT_MODEL
+if 'model_selector' not in st.session_state:
+    st.session_state.model_selector = DEFAULT_MODEL
 if 'theme' not in st.session_state:
     st.session_state.theme = "Light"
 if 'system_prompt' not in st.session_state:
@@ -624,7 +630,7 @@ with st.sidebar:
             else:
                 st.warning("No messages to copy")
 
-    # Logout button
+    # Logout and About buttons
     st.divider()
     if st.button("🚪 Logout", use_container_width=True):
         cookie_manager = get_cookie_manager()
@@ -632,6 +638,13 @@ with st.sidebar:
         st.session_state.authenticated = False
         st.session_state.msgs = []
         st.rerun()
+
+    if st.button("ℹ️ About", use_container_width=True):
+        st.info(
+            f"**Claude Chat** v{APP_VERSION}\n\n"
+            f"Default model: `{DEFAULT_MODEL}`\n\n"
+            f"Active model: `{st.session_state.selected_model}`"
+        )
 
 # Main chat interface
 st.title("🤖 Claude Chat")
