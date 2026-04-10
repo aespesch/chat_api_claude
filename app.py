@@ -9,16 +9,20 @@ warnings.filterwarnings('ignore')
 
 # ============ LOGGING SETUP ============
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='[%(asctime)s] %(levelname)s - %(funcName)s: %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# Silence noisy third-party loggers (httpx, httpcore, anthropic internals)
+for _lib in ("httpx", "httpcore", "anthropic"):
+    logging.getLogger(_lib).setLevel(logging.WARNING)
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
 # ============ CONSTANTS ============
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 COOKIE_NAME = "claude_chat_auth"
 COOKIE_EXPIRY_DAYS = 2  # 48 hours
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
@@ -51,17 +55,20 @@ def check_password():
     Returns True if the user is authenticated.
     Authentication persists for 48h via a browser cookie.
     """
-    logger.debug("check_password() called")
-    cookie_manager = get_cookie_manager()
-
     # 1) Check in-memory session first (fastest path)
+    #    IMPORTANT: return BEFORE creating CookieManager component.
+    #    The CookieManager is a React component that triggers a Streamlit
+    #    rerun ~1s after mounting, which kills any active streaming generator.
     if st.session_state.get("authenticated"):
-        logger.debug("✅ User already authenticated in session")
+        logger.info("✅ User already authenticated in session")
         return True
 
-    # 2) Check cookie for persisted session
+    # 2) Only create CookieManager when we actually need it (not yet authenticated)
+    cookie_manager = get_cookie_manager()
+
+    # 3) Check cookie for persisted session
     auth_cookie = cookie_manager.get(COOKIE_NAME)
-    logger.debug(f"Cookie retrieved: {auth_cookie is not None}")
+    logger.info(f"Cookie retrieved: {auth_cookie is not None}")
 
     if auth_cookie is not None:
         try:
@@ -86,14 +93,14 @@ def check_password():
                     logger.debug("❌ Cookie expired")
 
             # Cookie expired or invalid — remove it
-            logger.debug("Removing invalid/expired cookie")
+            logger.info("Removing invalid/expired cookie")
             cookie_manager.delete(COOKIE_NAME)
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             # Malformed cookie — remove it
             logger.warning(f"⚠️ Cookie parsing error: {e}")
             cookie_manager.delete(COOKIE_NAME)
 
-    # 3) Not authenticated — show login form
+    # 4) Not authenticated — show login form
     st.title("🔐 Authentication Required")
     password = st.text_input("Enter password:", type="password", key="password_input")
 
