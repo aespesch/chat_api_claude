@@ -1,4 +1,4 @@
-import os, streamlit as st, anthropic, base64, warnings, re, json, html, io, hashlib
+import os, streamlit as st, anthropic, base64, warnings, re, json, html, io, hashlib, logging
 from pathlib import Path
 from streamlit.components.v1 import html as st_html
 from datetime import datetime, timedelta
@@ -6,6 +6,14 @@ import PyPDF2
 import extra_streamlit_components as stx
 
 warnings.filterwarnings('ignore')
+
+# ============ LOGGING SETUP ============
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='[%(asctime)s] %(levelname)s - %(funcName)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
 # ============ CONSTANTS ============
@@ -19,7 +27,7 @@ MERMAID_PATTERN = r'```mermaid\s*\n(.*?)```'       # for re.findall — extracts
 MERMAID_SPLIT_PATTERN = r'```mermaid\s*\n.*?```'   # for re.split  — splits text around blocks
 
 # Startup log — visible in Streamlit Cloud logs
-print(f"🚀 Loading Claude Chat v{APP_VERSION} | Default model: {DEFAULT_MODEL}")
+logger.info(f"🚀 Loading Claude Chat v{APP_VERSION} | Default model: {DEFAULT_MODEL}")
 
 # ============ COOKIE-BASED PERSISTENT AUTHENTICATION (48h) ============
 
@@ -43,14 +51,17 @@ def check_password():
     Returns True if the user is authenticated.
     Authentication persists for 48h via a browser cookie.
     """
+    logger.debug("check_password() called")
     cookie_manager = get_cookie_manager()
 
     # 1) Check in-memory session first (fastest path)
     if st.session_state.get("authenticated"):
+        logger.debug("✅ User already authenticated in session")
         return True
 
     # 2) Check cookie for persisted session
     auth_cookie = cookie_manager.get(COOKIE_NAME)
+    logger.debug(f"Cookie retrieved: {auth_cookie is not None}")
 
     if auth_cookie is not None:
         try:
@@ -58,6 +69,7 @@ def check_password():
             cookie_data = auth_cookie if isinstance(auth_cookie, dict) else json.loads(auth_cookie)
             stored_token = cookie_data.get("token", "")
             expiry_str = cookie_data.get("expiry", "")
+            logger.debug(f"Cookie parsed successfully | Expiry: {expiry_str}")
 
             if expiry_str:
                 expiry_dt = datetime.fromisoformat(expiry_str)
@@ -68,12 +80,17 @@ def check_password():
 
                     if stored_token == expected_token:
                         st.session_state.authenticated = True
+                        logger.info("✅ User authenticated via valid cookie")
                         return True
+                else:
+                    logger.debug("❌ Cookie expired")
 
             # Cookie expired or invalid — remove it
+            logger.debug("Removing invalid/expired cookie")
             cookie_manager.delete(COOKIE_NAME)
-        except (json.JSONDecodeError, ValueError, KeyError):
+        except (json.JSONDecodeError, ValueError, KeyError) as e:
             # Malformed cookie — remove it
+            logger.warning(f"⚠️ Cookie parsing error: {e}")
             cookie_manager.delete(COOKIE_NAME)
 
     # 3) Not authenticated — show login form
@@ -185,35 +202,45 @@ class ClaudeAPI:
 
     def _validate_api_key(self):
         """Validate API key with minimal call"""
+        logger.debug("Validating API key...")
         try:
             self.client.messages.create(
                 model=DEFAULT_MODEL,
                 max_tokens=1,
                 messages=[{"role": "user", "content": "Hi"}]
             )
+            logger.info("✅ API key validated successfully")
             return True
-        except:
+        except Exception as e:
+            logger.error(f"❌ API key validation failed: {e}")
             return False
 
     def send_message_stream(self, msg, model, temp=0.7, max_t=2000, hist=None, files=None, system_prompt=None):
         """Stream version that returns a generator"""
+        logger.debug(f"send_message_stream() called | model={model}, files={len(files or [])}, temp={temp}")
+
         if not self.client:
+            logger.error("❌ Client not initialized")
             yield "❌ API key not configured"
             return
 
         content = [{"type": "text", "text": sanitize_input(msg)}]
 
         if files:
+            logger.debug(f"Processing {len(files)} files...")
             for f in files:
                 f.seek(0)
                 try:
                     processed_content = process_file(f)
                     if processed_content:
                         content.append(processed_content)
+                        logger.debug(f"✅ Processed file: {f.name}")
                 except Exception as e:
+                    logger.error(f"❌ Error processing {f.name}: {e}")
                     st.warning(f"Could not process file {f.name}: {e}")
 
         msgs = (hist or []) + [{"role": "user", "content": content}]
+        logger.debug(f"Message history: {len(msgs)} messages total")
 
         kwargs = {
             "model": model,
@@ -226,19 +253,27 @@ class ClaudeAPI:
             kwargs["system"] = system_prompt
 
         try:
+            logger.debug(f"Starting stream to {model}...")
             with self.client.messages.stream(**kwargs) as stream:
+                chunk_count = 0
                 for text in stream.text_stream:
+                    chunk_count += 1
                     yield text
-        except anthropic.RateLimitError:
+                logger.debug(f"✅ Stream completed | {chunk_count} chunks received")
+        except anthropic.RateLimitError as e:
+            logger.warning(f"⏱️ Rate limit: {e}")
             yield "⏱️ Rate limit reached. Please wait a few seconds..."
-        except anthropic.AuthenticationError:
+        except anthropic.AuthenticationError as e:
+            logger.error(f"🔐 Auth error: {e}")
             yield "🔐 Authentication error. Please check your API key."
         except anthropic.BadRequestError as e:
+            logger.error(f"❌ Bad request: {e}")
             if "model" in str(e).lower():
                 yield f"❌ Model '{model}' not available"
             else:
                 yield f"❌ Invalid request: {str(e)}"
         except Exception as e:
+            logger.error(f"❌ Unexpected error in stream: {type(e).__name__}: {e}")
             yield f"❌ Unexpected error: {str(e)}"
 
 @st.cache_data(ttl=3600)
@@ -673,6 +708,8 @@ files = st.file_uploader(
 
 # Chat input
 if prompt := st.chat_input("Type your message..." if not template_prompt else template_prompt):
+    logger.info(f"📝 User input received | Length: {len(prompt)}")
+
     if template_prompt and prompt == template_prompt:
         prompt = template_prompt
 
@@ -682,6 +719,7 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else te
 
     # Handle /model command
     if prompt.strip().lower() == "/model":
+        logger.debug("Executing /model command")
         with st.chat_message("assistant"):
             try:
                 test_resp = st.session_state.api.client.messages.create(
@@ -697,13 +735,16 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else te
                     f"🔍 **Returned by API:** `{actual_model}`\n\n"
                     f"{match}"
                 )
+                logger.info(f"✅ /model command executed | UI: {model} | API: {actual_model}")
             except Exception as e:
+                logger.error(f"❌ /model command error: {e}")
                 resp = f"❌ Error checking model: {e}"
             st.markdown(resp)
         st.session_state.msgs.append({"role": "assistant", "content": resp})
         st.stop()
 
     with st.chat_message("assistant"):
+        logger.info(f"💬 Processing message | Model: {model} | Streaming: {use_streaming}")
         history = [
             {"role": m["role"], "content": m["content"]}
             for m in st.session_state.msgs[:-1]
@@ -711,6 +752,7 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else te
         stream_args = (prompt, model, temp, max_t, history, files, st.session_state.system_prompt)
 
         if use_streaming:
+            logger.debug("Using streaming mode")
             message_placeholder = st.empty()
             full_response = ""
 
@@ -721,10 +763,13 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else te
             message_placeholder.empty()
             render_message_with_mermaid(full_response, st.session_state.enable_mermaid)
             resp = full_response
+            logger.info(f"✅ Streaming response completed | Length: {len(resp)}")
         else:
+            logger.debug("Using non-streaming mode")
             with st.spinner("Thinking..."):
                 resp = "".join(st.session_state.api.send_message_stream(*stream_args))
 
             render_message_with_mermaid(resp, st.session_state.enable_mermaid)
+            logger.info(f"✅ Non-streaming response completed | Length: {len(resp)}")
 
         st.session_state.msgs.append({"role": "assistant", "content": resp})
