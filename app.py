@@ -50,7 +50,8 @@ def check_password():
 
     if auth_cookie is not None:
         try:
-            cookie_data = json.loads(auth_cookie)
+            # CookieManager may return a dict or a JSON string depending on version
+            cookie_data = auth_cookie if isinstance(auth_cookie, dict) else json.loads(auth_cookie)
             stored_token = cookie_data.get("token", "")
             expiry_str = cookie_data.get("expiry", "")
 
