@@ -1,17 +1,34 @@
 @echo off
-echo Site Finance
-cd /d D:\USER\Toni\Financeiro\Site
-call SyncGit.bat "Auto"
+setlocal enabledelayedexpansion
+chcp 65001
 
-echo chat_api_claude
-cd /d D:\USER\Toni\Cursos\LLM\Claude\chat_api_claude
-call SyncGit.bat "Auto"
+:: --- Configuração ---
+:: Lista de caminhos separados por ponto e vírgula
+set "folders=D:\USER\Toni\Financeiro\Site;D:\USER\Toni\Cursos\LLM\Claude\chat_api_claude;D:\python;D:\USER\Toni\Obsidian"
 
-echo Python
-cd /d d:\python
-call SyncGit.bat "Auto"
+echo ============================================
+echo   Iniciando Sincronização Global do Git
+echo ============================================
 
-echo Obsidian
-cd /d D:\USER\Toni\Obsidian
-call SyncGit.bat "Auto"
+:: --- Loop de Execução ---
+for %%G in ("%folders:;=" "%") do (
+    pushd %%~G
+    if errorlevel 1 (
+        echo [ERRO] Pasta nao encontrada: %%~G
+    ) else (
+        echo.
+        echo ********************************************
+        echo * Processando: %%~nxG
+        echo * Diretorio:   %%~G
+        echo ********************************************
+        
+        call SyncGit.bat "Auto"
+        
+        popd
+    )
+)
 
+echo.
+echo ============================================
+echo   Sincronização Concluída!
+echo ============================================
