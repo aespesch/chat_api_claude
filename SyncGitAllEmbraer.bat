@@ -4,7 +4,7 @@ chcp 65001
 
 :: --- Configuração ---
 :: Lista de caminhos separados por ponto e vírgula
-set "folders=C:\DATA\chat_api_claude;C:\DATA\Python;C:\DATA\obsidian"
+set "folders=C:\DATA\Python\PROJECTS\LLM\chat_api_claude;C:\DATA\Python;C:\DATA\obsidian"
 
 echo ============================================
 echo   Iniciando Sincronização Global do Git
