@@ -117,20 +117,16 @@ streamlit run app.py --logger.level=debug
 ## Model Information
 
 The app supports these Claude models (if you have access):
-- **Claude Opus 4.1**: Most advanced (August 2025)
-- **Claude Opus 4**: Previous Opus version
-- **Claude Sonnet 4**: Balanced performance
-- **Claude 3 Opus**: Older but capable
-- **Claude 3.5 Sonnet**: Updated Sonnet
-- **Claude 3 Sonnet**: Balanced older model
-- **Claude 3 Haiku**: Fast and efficient
+- **Claude Opus 4.6**: Most advanced (April 2026)
+- **Claude Sonnet 4.6**: Balanced performance
+- **Claude Haiku 4.5**: Fast and efficient
 
 ## Security Best Practices
 
 1. **Protect Your API Key**
    - Never share your API key
    - Add `.env` to `.gitignore`
-   - Use environment variables in production
+   - Use environment variables in production (google streamlit secrets)
 
 2. **File Upload Safety**
    - The app processes files locally
@@ -145,4 +141,4 @@ The app supports these Claude models (if you have access):
 
 ## License
 
-This application is for educational and development purposes. Ensure you comply with Anthropic's terms of service when using their API."# chat_api_claude" 
+This application is for educational and development purposes. Ensure you comply with Anthropic's terms of service when using their API.
