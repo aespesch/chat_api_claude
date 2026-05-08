@@ -304,8 +304,17 @@ def extract_text_from_pdf_cached(pdf_content):
     return text
 
 def sanitize_input(text):
-    """Sanitize user input"""
-    return html.escape(text)
+    """Sanitize user input for API consumption.
+
+    Note: html.escape() is NOT used here because the text is sent
+    to Claude's API (JSON), not rendered as raw HTML in a browser.
+    Streamlit handles its own output sanitization.
+    """
+    # Remove null bytes and other control characters that could cause issues
+    text = text.replace('\x00', '')
+    # Strip leading/trailing whitespace
+    text = text.strip()
+    return text
 
 def validate_file(file):
     """Validate file before processing"""
