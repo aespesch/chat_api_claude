@@ -161,16 +161,6 @@ class ClaudeAPI:
         "Debug": "Find and fix errors in this code:",
         "Explain": "Explain this concept in simple terms:",
         "Refactor": "Refactor this code for better performance and readability:",
-        "Rewrite": ("Rewrite the following text applying all of these guidelines:\n"
-    "1. Fix any Portuguese language errors (spelling, grammar, agreement, verb/noun governance).\n"
-    "2. Make the text more concise by removing unnecessary words and sentences.\n"
-    "3. Remove redundancies and repeated ideas.\n"
-    "4. Improve reading fluidity and clarity.\n"
-    "5. Fully preserve all wikimedia/wikitext formatting "
-    "(templates, internal/external links, tables, categories, references, HTML tags, etc.).\n\n"
-    "Return only the rewritten text, without additional explanations.\n\n"
-    "Text:"
-     ),
     }
 
     @classmethod
