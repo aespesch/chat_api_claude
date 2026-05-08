@@ -724,15 +724,21 @@ files = st.file_uploader(
 )
 
 # Chat input
-if prompt := st.chat_input("Type your message..." if not template_prompt else template_prompt):
+if prompt := st.chat_input("Type your message..." if not template_prompt else f"[{template}] Type your text here..."):
     logger.info(f"📝 User input received | Length: {len(prompt)}")
 
-    if template_prompt and prompt == template_prompt:
-        prompt = template_prompt
+    # ✅ CONCATENAR template + texto do usuário
+    if template_prompt:
+        full_prompt = f"{template_prompt}\n\n{prompt}"
+        # Mostrar ao usuário o que ele digitou (sem o template, para não poluir)
+        display_prompt = f"**[{template}]**\n\n{prompt}"
+    else:
+        full_prompt = prompt
+        display_prompt = prompt
 
-    st.session_state.msgs.append({"role": "user", "content": prompt})
+    st.session_state.msgs.append({"role": "user", "content": display_prompt})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(display_prompt)
 
     # Handle /model command
     if prompt.strip().lower() == "/model":
@@ -761,12 +767,13 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else te
         st.stop()
 
     with st.chat_message("assistant"):
-        logger.info(f"💬 Processing message | Model: {model} | Streaming: {use_streaming}")
+        logger.info(f"💬 Processing message | Model: {model} | Streaming: {use_streaming} | Template: {template or 'None'}")
         history = [
             {"role": m["role"], "content": m["content"]}
             for m in st.session_state.msgs[:-1]
         ]
-        stream_args = (prompt, model, temp, max_t, history, files, st.session_state.system_prompt)
+        # ✅ Enviar full_prompt (template + texto) em vez de apenas prompt
+        stream_args = (full_prompt, model, temp, max_t, history, files, st.session_state.system_prompt)
 
         if use_streaming:
             logger.debug("Using streaming mode")
