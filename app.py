@@ -283,12 +283,13 @@ class ClaudeAPI:
         except anthropic.AuthenticationError as e:
             logger.error(f"🔐 Auth error: {e}")
             yield "🔐 Authentication error. Please check your API key."
+        except (anthropic.NotFoundError, anthropic.PermissionDeniedError) as e:
+            logger.error(f"🔍 Model unavailable: {type(e).__name__}: {e}")
+            yield (f"❌ Model '{model}' is not available to this API key "
+                   f"(not found or no access).\n\nDetails: {str(e)}")
         except anthropic.BadRequestError as e:
             logger.error(f"❌ Bad request: {e}")
-            if "model" in str(e).lower():
-                yield f"❌ Model '{model}' not available"
-            else:
-                yield f"❌ Invalid request: {str(e)}"
+            yield f"❌ Invalid request: {str(e)}"
         except Exception as e:
             logger.error(f"❌ Unexpected error in stream: {type(e).__name__}: {e}")
             yield f"❌ Unexpected error: {str(e)}"
