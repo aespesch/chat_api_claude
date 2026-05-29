@@ -154,6 +154,20 @@ class ClaudeAPI:
         "claude-haiku-4-5-20251001": 64000,
     }
 
+    # Newer reasoning models (4.7+) use adaptive thinking and reject the
+    # `temperature` parameter — sending it returns a 400 error.
+    MODELS_NO_TEMPERATURE = {
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+    }
+
+    # Models that accept the `effort` parameter (sent as output_config.effort),
+    # mapped to the effort levels each one supports. `max` is Opus-tier only.
+    MODEL_EFFORT_LEVELS = {
+        "claude-opus-4-8": ["low", "medium", "high", "max"],
+    }
+    DEFAULT_EFFORT = "high"  # API default; good balance of quality vs. cost
+
     PROMPT_TEMPLATES = {
         "Code Review": "Analyze this code and suggest improvements:",
         "Summary": "Create an executive summary of the following text:",
@@ -232,9 +246,9 @@ class ClaudeAPI:
             logger.error(f"❌ API key validation failed: {e}")
             return False
 
-    def send_message_stream(self, msg, model, temp=0.7, max_t=2000, hist=None, files=None, system_prompt=None):
+    def send_message_stream(self, msg, model, temp=0.7, max_t=2000, hist=None, files=None, system_prompt=None, effort=None):
         """Stream version that returns a generator"""
-        logger.debug(f"send_message_stream() called | model={model}, files={len(files or [])}, temp={temp}")
+        logger.debug(f"send_message_stream() called | model={model}, files={len(files or [])}, temp={temp}, effort={effort}")
 
         if not self.client:
             logger.error("❌ Client not initialized")
@@ -262,9 +276,20 @@ class ClaudeAPI:
         kwargs = {
             "model": model,
             "max_tokens": max_t,
-            "temperature": temp,
             "messages": msgs
         }
+
+        # Some newer models deprecated `temperature` — only send it when supported.
+        if model not in self.MODELS_NO_TEMPERATURE:
+            kwargs["temperature"] = temp
+        else:
+            logger.debug(f"Skipping temperature for {model} (not supported)")
+
+        # Effort controls reasoning depth / token spend on newer models.
+        # Sent inside output_config (GA — no beta header needed).
+        if effort and model in self.MODEL_EFFORT_LEVELS:
+            kwargs["output_config"] = {"effort": effort}
+            logger.debug(f"Using effort='{effort}' for {model}")
 
         if system_prompt:
             kwargs["system"] = system_prompt
@@ -605,7 +630,24 @@ with st.sidebar:
     st.info(f"📊 Max tokens for this model: {max_tokens_limit:,}")
 
     # Parameters
-    temp = st.slider("Temperature", 0.0, 1.0, 0.5, 0.1)
+    if model in ClaudeAPI.MODELS_NO_TEMPERATURE:
+        temp = 0.5  # placeholder; not sent for models that deprecated temperature
+        st.caption("🌡️ Temperature is not configurable for this model (uses adaptive reasoning).")
+    else:
+        temp = st.slider("Temperature", 0.0, 1.0, 0.5, 0.1)
+
+    # Effort: controls reasoning depth and token spend on newer models.
+    effort_levels = ClaudeAPI.MODEL_EFFORT_LEVELS.get(model)
+    if effort_levels:
+        effort = st.selectbox(
+            "🧠 Effort",
+            effort_levels,
+            index=effort_levels.index(ClaudeAPI.DEFAULT_EFFORT),
+            help="Higher effort = more thorough reasoning, but slower and more tokens. "
+                 "'max' is Opus-only. Default: high.",
+        )
+    else:
+        effort = None
     max_t = st.slider(
         "Max Tokens",
         100,
@@ -783,7 +825,7 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else f"
             for m in st.session_state.msgs[:-1]
         ]
         # ✅ Enviar full_prompt (template + texto) em vez de apenas prompt
-        stream_args = (full_prompt, model, temp, max_t, history, files, st.session_state.system_prompt)
+        stream_args = (full_prompt, model, temp, max_t, history, files, st.session_state.system_prompt, effort)
 
         if use_streaming:
             logger.debug("Using streaming mode")
