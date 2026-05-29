@@ -18,11 +18,12 @@ logger = logging.getLogger(__name__)
 # Silence noisy third-party loggers (httpx, httpcore, anthropic internals)
 for _lib in ("httpx", "httpcore", "anthropic"):
     logging.getLogger(_lib).setLevel(logging.WARNING)
+
 st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
 # ============ CONSTANTS ============
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 COOKIE_NAME = "claude_chat_auth"
 COOKIE_EXPIRY_DAYS = 2  # 48 hours
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
@@ -32,6 +33,11 @@ MERMAID_SPLIT_PATTERN = r'```mermaid\s*\n.*?```'   # for re.split  — splits te
 
 # Startup log — visible in Streamlit Cloud logs
 logger.info(f"🚀 Loading Claude Chat v{APP_VERSION} | Default model: {DEFAULT_MODEL}")
+
+# ============ INITIALIZE SESSION STATE EARLY ============
+# CRITICAL: Initialize authenticated BEFORE check_password()
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
 
 # ============ COOKIE-BASED PERSISTENT AUTHENTICATION (48h) ============
 
@@ -131,7 +137,7 @@ def check_password():
     return False
 
 
-# Check password BEFORE any API initialization
+# ✅ CHECK PASSWORD BEFORE ANY API INITIALIZATION
 if not check_password():
     st.stop()
 
@@ -522,7 +528,7 @@ def create_usage_dataframe(messages):
 
     return pd.DataFrame(data)
 
-# Initialize session state
+# ============ INITIALIZE SESSION STATE ============
 if 'msgs' not in st.session_state:
     st.session_state.msgs = []
 if 'api' not in st.session_state:
@@ -540,7 +546,7 @@ if 'enable_mermaid' not in st.session_state:
 if 'saved_conversations' not in st.session_state:
     st.session_state.saved_conversations = {}
 
-# Sidebar
+# ============ SIDEBAR ============
 with st.sidebar:
     st.title("⚙️ Settings")
 
@@ -648,6 +654,7 @@ with st.sidebar:
         )
     else:
         effort = None
+
     max_t = st.slider(
         "Max Tokens",
         100,
@@ -750,7 +757,7 @@ with st.sidebar:
             f"Active model: `{st.session_state.selected_model}`"
         )
 
-# Main chat interface
+# ============ MAIN CHAT INTERFACE ============
 st.title("🤖 Claude Chat")
 
 # Prompt Templates
@@ -779,10 +786,10 @@ files = st.file_uploader(
 if prompt := st.chat_input("Type your message..." if not template_prompt else f"[{template}] Type your text here..."):
     logger.info(f"📝 User input received | Length: {len(prompt)}")
 
-    # ✅ CONCATENAR template + texto do usuário
+    # ✅ CONCATENATE template + user text
     if template_prompt:
         full_prompt = f"{template_prompt}\n\n{prompt}"
-        # Mostrar ao usuário o que ele digitou (sem o template, para não poluir)
+        # Show to user what they typed (without template, to avoid clutter)
         display_prompt = f"**[{template}]**\n\n{prompt}"
     else:
         full_prompt = prompt
@@ -824,7 +831,7 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else f"
             {"role": m["role"], "content": m["content"]}
             for m in st.session_state.msgs[:-1]
         ]
-        # ✅ Enviar full_prompt (template + texto) em vez de apenas prompt
+        # ✅ Send full_prompt (template + text) instead of just prompt
         stream_args = (full_prompt, model, temp, max_t, history, files, st.session_state.system_prompt, effort)
 
         if use_streaming:
