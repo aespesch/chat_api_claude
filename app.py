@@ -143,13 +143,13 @@ class APIError(Exception):
 
 class ClaudeAPI:
     MODELS = {
-        "claude-opus-4-6": "Claude Opus 4.6 (Most Intelligent)",
+        "claude-opus-4-8": "Claude Opus 4.8 (Most Intelligent)",
         "claude-sonnet-4-6": "Claude Sonnet 4.6 (Best Speed/Intelligence)",
         "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (Fastest)",
     }
 
     MODEL_MAX_TOKENS = {
-        "claude-opus-4-6": 128000,
+        "claude-opus-4-8": 128000,
         "claude-sonnet-4-6": 64000,
         "claude-haiku-4-5-20251001": 64000,
     }
