@@ -117,7 +117,7 @@ streamlit run app.py --logger.level=debug
 ## Model Information
 
 The app supports these Claude models (if you have access):
-- **Claude Opus 4.6**: Most advanced (April 2026)
+- **Claude Opus 4.8**: Most advanced (May 2026)
 - **Claude Sonnet 4.6**: Balanced performance
 - **Claude Haiku 4.5**: Fast and efficient
 
