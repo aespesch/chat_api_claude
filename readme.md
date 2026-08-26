@@ -75,7 +75,9 @@ Supported file types:
 - **Documents**: PDF (text extraction)
 
 ### 4. **Customization Options**
-- **Temperature** (0.0-1.0): Controls response creativity
+- **Temperature** (0.0-1.0): Controls response creativity (Haiku 4.5 only — the
+  Fable/Opus/Sonnet 5 models use adaptive reasoning and reject this parameter)
+- **Effort** (low–max): Reasoning depth and token spend on the 5-series models
 - **Max Tokens**: Limits response length
 - **System Prompt**: Set custom instructions for Claude
 
@@ -117,8 +119,9 @@ streamlit run app.py --logger.level=debug
 ## Model Information
 
 The app supports these Claude models (if you have access):
-- **Claude Opus 4.8**: Most advanced (May 2026)
-- **Claude Sonnet 4.6**: Balanced performance
+- **Claude Fable 5**: Most capable model, for the hardest reasoning tasks
+- **Claude Opus 5**: Most intelligent general-purpose model
+- **Claude Sonnet 5**: Balanced performance
 - **Claude Haiku 4.5**: Fast and efficient
 
 ## Security Best Practices

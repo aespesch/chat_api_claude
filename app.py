@@ -23,10 +23,10 @@ st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
 # ============ CONSTANTS ============
 
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 COOKIE_NAME = "claude_chat_auth"
 COOKIE_EXPIRY_DAYS = 2  # 48 hours
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_MODEL = "claude-haiku-4-5"
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 MERMAID_PATTERN = r'```mermaid\s*\n(.*?)```'       # for re.findall — extracts diagram content
 MERMAID_SPLIT_PATTERN = r'```mermaid\s*\n.*?```'   # for re.split  — splits text around blocks
@@ -149,30 +149,41 @@ class APIError(Exception):
 
 class ClaudeAPI:
     MODELS = {
-        "claude-opus-4-8": "Claude Opus 4.8 (Most Intelligent)",
-        "claude-sonnet-4-6": "Claude Sonnet 4.6 (Best Speed/Intelligence)",
-        "claude-haiku-4-5-20251001": "Claude Haiku 4.5 (Fastest)",
+        "claude-fable-5": "Claude Fable 5 (Most Capable)",
+        "claude-opus-5": "Claude Opus 5 (Most Intelligent)",
+        "claude-sonnet-5": "Claude Sonnet 5 (Best Speed/Intelligence)",
+        "claude-haiku-4-5": "Claude Haiku 4.5 (Fastest)",
     }
 
     MODEL_MAX_TOKENS = {
-        "claude-opus-4-8": 128000,
-        "claude-sonnet-4-6": 64000,
-        "claude-haiku-4-5-20251001": 64000,
+        "claude-fable-5": 128000,
+        "claude-opus-5": 128000,
+        "claude-sonnet-5": 128000,
+        "claude-haiku-4-5": 64000,
     }
 
-    # Newer reasoning models (4.7+) use adaptive thinking and reject the
-    # `temperature` parameter — sending it returns a 400 error.
-    MODELS_NO_TEMPERATURE = {
-        "claude-opus-4-8",
-        "claude-opus-4-7",
+    # `temperature` was removed from the anthropic SDK 1.x signatures (passing it
+    # raises TypeError) and current reasoning models reject it server-side too.
+    # Only the models below still honour it, via `extra_body`.
+    MODELS_WITH_TEMPERATURE = {
+        "claude-haiku-4-5",
     }
 
     # Models that accept the `effort` parameter (sent as output_config.effort),
-    # mapped to the effort levels each one supports. `max` is Opus-tier only.
+    # mapped to the effort levels each one supports. Haiku 4.5 has no effort.
     MODEL_EFFORT_LEVELS = {
-        "claude-opus-4-8": ["low", "medium", "high", "max"],
+        "claude-fable-5": ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
+        "claude-sonnet-5": ["low", "medium", "high", "xhigh", "max"],
     }
     DEFAULT_EFFORT = "high"  # API default; good balance of quality vs. cost
+
+    # Fable 5 / Opus 5 may decline a request (stop_reason "refusal"). With
+    # server-side fallback enabled the API re-runs the same request on a
+    # fallback model inside the same call, routed by refusal category.
+    ENABLE_REFUSAL_FALLBACK = True
+    REFUSAL_FALLBACK_MODELS = {"claude-fable-5", "claude-opus-5"}
+    REFUSAL_FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
     PROMPT_TEMPLATES = {
         "Code Review": "Analyze this code and suggest improvements:",
@@ -285,9 +296,11 @@ class ClaudeAPI:
             "messages": msgs
         }
 
-        # Some newer models deprecated `temperature` — only send it when supported.
-        if model not in self.MODELS_NO_TEMPERATURE:
-            kwargs["temperature"] = temp
+        # `temperature` is no longer a parameter of the SDK's messages methods,
+        # so it can only be sent through extra_body, and only to models that
+        # still accept it. Current reasoning models return 400 if it is present.
+        if model in self.MODELS_WITH_TEMPERATURE:
+            kwargs["extra_body"] = {"temperature": temp}
         else:
             logger.debug(f"Skipping temperature for {model} (not supported)")
 
@@ -300,6 +313,13 @@ class ClaudeAPI:
         if system_prompt:
             kwargs["system"] = system_prompt
 
+        # Opt into server-side refusal fallback on the models that support it.
+        # Sent as header + raw body so it works regardless of SDK version.
+        if self.ENABLE_REFUSAL_FALLBACK and model in self.REFUSAL_FALLBACK_MODELS:
+            kwargs["extra_headers"] = {"anthropic-beta": self.REFUSAL_FALLBACK_BETA}
+            kwargs.setdefault("extra_body", {})["fallbacks"] = "default"
+            logger.debug(f"Refusal fallback enabled for {model}")
+
         try:
             logger.debug(f"Starting stream to {model}...")
             with self.client.messages.stream(**kwargs) as stream:
@@ -307,7 +327,11 @@ class ClaudeAPI:
                 for text in stream.text_stream:
                     chunk_count += 1
                     yield text
-                logger.debug(f"✅ Stream completed | {chunk_count} chunks received")
+                final = stream.get_final_message()
+                logger.debug(f"✅ Stream completed | {chunk_count} chunks | "
+                             f"stop_reason={final.stop_reason}")
+                if final.stop_reason == "refusal":
+                    yield "\n\n⚠️ The model declined to answer this request."
         except anthropic.RateLimitError as e:
             logger.warning(f"⏱️ Rate limit: {e}")
             yield "⏱️ Rate limit reached. Please wait a few seconds..."
@@ -636,11 +660,11 @@ with st.sidebar:
     st.info(f"📊 Max tokens for this model: {max_tokens_limit:,}")
 
     # Parameters
-    if model in ClaudeAPI.MODELS_NO_TEMPERATURE:
-        temp = 0.5  # placeholder; not sent for models that deprecated temperature
-        st.caption("🌡️ Temperature is not configurable for this model (uses adaptive reasoning).")
-    else:
+    if model in ClaudeAPI.MODELS_WITH_TEMPERATURE:
         temp = st.slider("Temperature", 0.0, 1.0, 0.5, 0.1)
+    else:
+        temp = 0.5  # placeholder; not sent for models that dropped temperature
+        st.caption("🌡️ Temperature is not configurable for this model (uses adaptive reasoning).")
 
     # Effort: controls reasoning depth and token spend on newer models.
     effort_levels = ClaudeAPI.MODEL_EFFORT_LEVELS.get(model)
@@ -650,7 +674,7 @@ with st.sidebar:
             effort_levels,
             index=effort_levels.index(ClaudeAPI.DEFAULT_EFFORT),
             help="Higher effort = more thorough reasoning, but slower and more tokens. "
-                 "'max' is Opus-only. Default: high.",
+                 "Default: high; 'xhigh' suits coding/agentic work; 'max' for hard problems.",
         )
     else:
         effort = None
@@ -806,7 +830,7 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else f"
             try:
                 test_resp = st.session_state.api.client.messages.create(
                     model=model,
-                    max_tokens=1,
+                    max_tokens=16,  # 1 can be rejected by adaptive-thinking models
                     messages=[{"role": "user", "content": "Hi"}]
                 )
                 actual_model = test_resp.model
