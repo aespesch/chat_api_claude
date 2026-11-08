@@ -23,7 +23,7 @@ st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
 # ============ CONSTANTS ============
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 COOKIE_NAME = "claude_chat_auth"
 COOKIE_EXPIRY_DAYS = 2  # 48 hours
 DEFAULT_MODEL = "claude-haiku-4-5"
@@ -162,12 +162,21 @@ class ClaudeAPI:
         "claude-haiku-4-5": 64000,
     }
 
-    # `temperature` was removed from the anthropic SDK 1.x signatures (passing it
-    # raises TypeError) and current reasoning models reject it server-side too.
-    # Only the models below still honour it, via `extra_body`.
-    MODELS_WITH_TEMPERATURE = {
-        "claude-haiku-4-5",
-    }
+    # ------------------------------------------------------------------
+    # TEMPERATURE SUPPORT
+    # ------------------------------------------------------------------
+    # `temperature` was removed from the anthropic SDK 1.x method signatures
+    # (passing it directly raises TypeError) AND the current model generation
+    # rejects it server-side with:
+    #     400 invalid_request_error:
+    #     "temperature: Extra inputs are not permitted"
+    # ...even when smuggled through `extra_body`. This includes
+    # claude-haiku-4-5, which previously accepted it.
+    #
+    # => The allowlist is intentionally EMPTY: temperature is never sent.
+    #    If/when a future model re-enables it, just add its id here and the
+    #    sidebar slider + request payload wiring come back automatically.
+    MODELS_WITH_TEMPERATURE: set = set()
 
     # Models that accept the `effort` parameter (sent as output_config.effort),
     # mapped to the effort levels each one supports. Haiku 4.5 has no effort.
@@ -208,6 +217,42 @@ class ClaudeAPI:
     def get_max_tokens(cls, model):
         """Returns maximum token limit for a specific model"""
         return cls.MODEL_MAX_TOKENS.get(model, 4000)
+
+    @classmethod
+    def supports_temperature(cls, model: str) -> bool:
+        """True only for models that still accept the `temperature` parameter."""
+        return model in cls.MODELS_WITH_TEMPERATURE
+
+    @staticmethod
+    def _strip_unsupported_params(kwargs: dict, model: str) -> dict:
+        """
+        Safety net executed right before every API call.
+
+        Guarantees that `temperature` (and `top_p`/`top_k`, which share the same
+        restriction on reasoning models) never reaches the API for a model that
+        does not support it — no matter where in the code it was injected.
+        Also drops `extra_body` entirely if it ends up empty, so we don't send
+        a stray `{}` payload.
+        """
+        banned = ("temperature", "top_p", "top_k")
+
+        # Top-level (shouldn't happen with SDK 1.x, but be defensive)
+        for key in banned:
+            if key in kwargs and not ClaudeAPI.supports_temperature(model):
+                kwargs.pop(key, None)
+                logger.warning(f"🧹 Stripped top-level '{key}' for {model}")
+
+        extra_body = kwargs.get("extra_body")
+        if isinstance(extra_body, dict):
+            if not ClaudeAPI.supports_temperature(model):
+                for key in banned:
+                    if key in extra_body:
+                        extra_body.pop(key, None)
+                        logger.warning(f"🧹 Stripped extra_body['{key}'] for {model}")
+            if not extra_body:
+                kwargs.pop("extra_body", None)
+
+        return kwargs
 
     def __init__(self):
         self.client = None
@@ -263,9 +308,14 @@ class ClaudeAPI:
             logger.error(f"❌ API key validation failed: {e}")
             return False
 
-    def send_message_stream(self, msg, model, temp=0.7, max_t=2000, hist=None, files=None, system_prompt=None, effort=None):
-        """Stream version that returns a generator"""
-        logger.debug(f"send_message_stream() called | model={model}, files={len(files or [])}, temp={temp}, effort={effort}")
+    def send_message_stream(self, msg, model, temp=None, max_t=2000, hist=None, files=None, system_prompt=None, effort=None):
+        """
+        Stream version that returns a generator.
+
+        `temp` is accepted for signature compatibility but is only forwarded to
+        models listed in MODELS_WITH_TEMPERATURE (currently none).
+        """
+        logger.debug(f"send_message_stream() called | model={model}, files={len(files or [])}, effort={effort}")
 
         if not self.client:
             logger.error("❌ Client not initialized")
@@ -296,13 +346,12 @@ class ClaudeAPI:
             "messages": msgs
         }
 
-        # `temperature` is no longer a parameter of the SDK's messages methods,
-        # so it can only be sent through extra_body, and only to models that
-        # still accept it. Current reasoning models return 400 if it is present.
-        if model in self.MODELS_WITH_TEMPERATURE:
+        # Temperature: only for models that still accept it (allowlist is empty).
+        if temp is not None and self.supports_temperature(model):
             kwargs["extra_body"] = {"temperature": temp}
+            logger.debug(f"Sending temperature={temp} for {model}")
         else:
-            logger.debug(f"Skipping temperature for {model} (not supported)")
+            logger.debug(f"Temperature NOT sent for {model} (unsupported)")
 
         # Effort controls reasoning depth / token spend on newer models.
         # Sent inside output_config (GA — no beta header needed).
@@ -319,6 +368,9 @@ class ClaudeAPI:
             kwargs["extra_headers"] = {"anthropic-beta": self.REFUSAL_FALLBACK_BETA}
             kwargs.setdefault("extra_body", {})["fallbacks"] = "default"
             logger.debug(f"Refusal fallback enabled for {model}")
+
+        # 🔒 Final guard: never let temperature/top_p/top_k slip through.
+        kwargs = self._strip_unsupported_params(kwargs, model)
 
         try:
             logger.debug(f"Starting stream to {model}...")
@@ -660,11 +712,15 @@ with st.sidebar:
     st.info(f"📊 Max tokens for this model: {max_tokens_limit:,}")
 
     # Parameters
-    if model in ClaudeAPI.MODELS_WITH_TEMPERATURE:
-        temp = st.slider("Temperature", 0.0, 1.0, 0.5, 0.1)
+    # Temperature slider is shown ONLY for models that still accept the
+    # parameter. The allowlist is currently empty, so `temp` stays None and is
+    # never included in the API payload.
+    if ClaudeAPI.supports_temperature(model):
+        temp = st.slider("🌡️ Temperature", 0.0, 1.0, 0.5, 0.1)
     else:
-        temp = 0.5  # placeholder; not sent for models that dropped temperature
-        st.caption("🌡️ Temperature is not configurable for this model (uses adaptive reasoning).")
+        temp = None
+        st.caption("🌡️ Temperature is not supported by the current Claude models "
+                   "(the API rejects it). Sampling is handled adaptively.")
 
     # Effort: controls reasoning depth and token spend on newer models.
     effort_levels = ClaudeAPI.MODEL_EFFORT_LEVELS.get(model)
@@ -778,7 +834,8 @@ with st.sidebar:
         st.info(
             f"**Claude Chat** v{APP_VERSION}\n\n"
             f"Default model: `{DEFAULT_MODEL}`\n\n"
-            f"Active model: `{st.session_state.selected_model}`"
+            f"Active model: `{st.session_state.selected_model}`\n\n"
+            f"Temperature: `disabled (unsupported by API)`"
         )
 
 # ============ MAIN CHAT INTERFACE ============
@@ -856,6 +913,7 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else f"
             for m in st.session_state.msgs[:-1]
         ]
         # ✅ Send full_prompt (template + text) instead of just prompt
+        # `temp` is None unless the model is in MODELS_WITH_TEMPERATURE.
         stream_args = (full_prompt, model, temp, max_t, history, files, st.session_state.system_prompt, effort)
 
         if use_streaming:
@@ -865,7 +923,7 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else f"
 
             for chunk in st.session_state.api.send_message_stream(*stream_args):
                 full_response += chunk
-                message_placeholder.markdown(full_response + "▼")
+                message_placeholder.markdown(full_response + "▌")
 
             message_placeholder.empty()
             render_message_with_mermaid(full_response, st.session_state.enable_mermaid)
