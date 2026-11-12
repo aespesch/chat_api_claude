@@ -1,4 +1,4 @@
-import os, streamlit as st, anthropic, base64, warnings, re, json, html, io, hashlib, logging, time
+import os, streamlit as st, anthropic, base64, warnings, re, json, html, io, hashlib, logging, time, threading
 from pathlib import Path
 from streamlit.components.v1 import html as st_html
 from datetime import datetime, timedelta
@@ -23,7 +23,7 @@ st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
 # ============ CONSTANTS ============
 
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 COOKIE_NAME = "claude_chat_auth"
 COOKIE_EXPIRY_DAYS = 2  # 48 hours
 DEFAULT_MODEL = "claude-haiku-5-5"
@@ -328,14 +328,32 @@ class ClaudeAPI:
             logger.error(f"❌ API key validation failed: {e}")
             return False
 
-    def send_message_stream(self, msg, model, temp=None, max_t=2000, hist=None, files=None, system_prompt=None, effort=None):
+    def build_user_content(self, msg, files=None):
+        """Builds the user content blocks. Runs in the MAIN script thread
+        (reads UploadedFile objects). Returns (content, errors)."""
+        content = [{"type": "text", "text": sanitize_input(msg)}]
+        errors = []
+        for f in (files or []):
+            try:
+                f.seek(0)
+                processed = process_file(f)
+                if processed:
+                    content.append(processed)
+                    logger.debug(f"✅ Processed file: {f.name}")
+            except Exception as e:
+                logger.error(f"❌ Error processing {f.name}: {e}")
+                errors.append(f"{f.name}: {e}")
+        return content, errors
+
+    def send_message_stream(self, content, model, temp=None, max_t=2000, hist=None, system_prompt=None, effort=None):
         """
-        Stream version that returns a generator.
+        Stream generator. Receives the already-built `content` blocks.
+        IMPORTANT: runs inside a background thread -> must NOT call st.* here.
 
         `temp` is accepted for signature compatibility but is only forwarded to
         models listed in MODELS_WITH_TEMPERATURE (currently none).
         """
-        logger.debug(f"send_message_stream() called | model={model}, files={len(files or [])}, effort={effort}")
+        logger.debug(f"send_message_stream() called | model={model}, effort={effort}")
         self.last_usage = None
 
         if not self.client:
@@ -343,42 +361,19 @@ class ClaudeAPI:
             yield "❌ API key not configured"
             return
 
-        content = [{"type": "text", "text": sanitize_input(msg)}]
-
-        if files:
-            logger.debug(f"Processing {len(files)} files...")
-            for f in files:
-                f.seek(0)
-                try:
-                    processed_content = process_file(f)
-                    if processed_content:
-                        content.append(processed_content)
-                        logger.debug(f"✅ Processed file: {f.name}")
-                except Exception as e:
-                    logger.error(f"❌ Error processing {f.name}: {e}")
-                    st.warning(f"Could not process file {f.name}: {e}")
-
         msgs = (hist or []) + [{"role": "user", "content": content}]
         logger.debug(f"Message history: {len(msgs)} messages total")
 
-        kwargs = {
-            "model": model,
-            "max_tokens": max_t,
-            "messages": msgs
-        }
+        kwargs = {"model": model, "max_tokens": max_t, "messages": msgs}
 
         # Temperature: only for models that still accept it (allowlist is empty).
         if temp is not None and self.supports_temperature(model):
             kwargs["extra_body"] = {"temperature": temp}
-            logger.debug(f"Sending temperature={temp} for {model}")
-        else:
-            logger.debug(f"Temperature NOT sent for {model} (unsupported)")
 
         # Effort controls reasoning depth / token spend on newer models.
         # Sent inside output_config (GA — no beta header needed).
         if effort and model in self.MODEL_EFFORT_LEVELS:
             kwargs["output_config"] = {"effort": effort}
-            logger.debug(f"Using effort='{effort}' for {model}")
 
         if system_prompt:
             kwargs["system"] = system_prompt
@@ -388,13 +383,11 @@ class ClaudeAPI:
         if self.ENABLE_REFUSAL_FALLBACK and model in self.REFUSAL_FALLBACK_MODELS:
             kwargs["extra_headers"] = {"anthropic-beta": self.REFUSAL_FALLBACK_BETA}
             kwargs.setdefault("extra_body", {})["fallbacks"] = "default"
-            logger.debug(f"Refusal fallback enabled for {model}")
 
         # 🔒 Final guard: never let temperature/top_p/top_k slip through.
         kwargs = self._strip_unsupported_params(kwargs, model)
 
         try:
-            logger.debug(f"Starting stream to {model}...")
             with self.client.messages.stream(**kwargs) as stream:
                 chunk_count = 0
                 for text in stream.text_stream:
@@ -408,10 +401,12 @@ class ClaudeAPI:
                     }
                 except Exception:
                     self.last_usage = None
-                logger.debug(f"✅ Stream completed | {chunk_count} chunks | "
-                             f"stop_reason={final.stop_reason} | usage={self.last_usage}")
+                logger.info(f"✅ Stream completed | {chunk_count} chunks | "
+                            f"stop_reason={final.stop_reason} | usage={self.last_usage}")
                 if final.stop_reason == "refusal":
                     yield "\n\n⚠️ The model declined to answer this request."
+                elif final.stop_reason == "max_tokens":
+                    yield "\n\n⚠️ Response truncated: max tokens limit reached."
         except anthropic.RateLimitError as e:
             logger.warning(f"⏱️ Rate limit: {e}")
             yield "⏱️ Rate limit reached. Please wait a few seconds..."
@@ -560,6 +555,8 @@ def display_message_with_metadata(message, idx, render_mermaid_diagrams=True):
 
     with col1:
         render_message_with_mermaid(message['content'], render_mermaid_diagrams)
+        if message.get("meta"):
+            st.caption(message["meta"])
 
     with col2:
         token_count = estimate_tokens(message['content'])
@@ -578,9 +575,10 @@ def save_conversation():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"chat_{timestamp}.json"
 
+    # Copy messages so later appends to the live chat don't mutate the saved one
     st.session_state.saved_conversations[filename] = {
         "timestamp": timestamp,
-        "messages": st.session_state.msgs,
+        "messages": [dict(m) for m in st.session_state.msgs],
         "model": st.session_state.selected_model
     }
     st.success(f"Conversation saved as {filename}")
@@ -589,7 +587,8 @@ def load_conversation(filename):
     """Load saved conversation"""
     if filename in st.session_state.saved_conversations:
         data = st.session_state.saved_conversations[filename]
-        st.session_state.msgs = data["messages"]
+        cancel_active_job()
+        st.session_state.msgs = [dict(m) for m in data["messages"]]
         saved_model = data.get("model", DEFAULT_MODEL)
         # Guard against legacy/unknown model ids saved by older app versions
         if saved_model not in ClaudeAPI.MODELS:
@@ -638,6 +637,143 @@ def create_usage_dataframe(messages):
 
     return pd.DataFrame(data)
 
+# ============ BACKGROUND GENERATION (survives Streamlit reruns) ============
+
+class StreamJob:
+    """
+    Runs the API stream in a background thread and accumulates the text.
+    Lives in st.session_state, so a rerun (websocket reconnect, widget click...)
+    no longer kills the generation nor loses the answer.
+    """
+
+    def __init__(self, api, content, model, temp, max_t, history, system_prompt, effort, prompt_text):
+        self.model = model
+        self.history = history
+        self.prompt_text = prompt_text
+        self.started_at = time.time()
+        self.finished_at = None
+        self.usage = None
+        self.committed = False
+        self._parts = []
+        self._lock = threading.Lock()
+        self._done = threading.Event()
+        self._cancel = threading.Event()
+        threading.Thread(
+            target=self._run,
+            args=(api, content, temp, max_t, system_prompt, effort),
+            daemon=True,
+        ).start()
+
+    def _run(self, api, content, temp, max_t, system_prompt, effort):
+        gen = api.send_message_stream(content, self.model, temp, max_t,
+                                      self.history, system_prompt, effort)
+        try:
+            for chunk in gen:
+                if self._cancel.is_set():
+                    break
+                with self._lock:
+                    self._parts.append(chunk)
+        except Exception as e:
+            logger.error(f"❌ StreamJob error: {type(e).__name__}: {e}")
+            with self._lock:
+                self._parts.append(f"\n\n❌ Unexpected error: {e}")
+        finally:
+            gen.close()  # closes the HTTP stream if we stopped early
+            self.usage = api.last_usage
+            self.finished_at = time.time()
+            self._done.set()
+
+    def text(self):
+        with self._lock:
+            return "".join(self._parts)
+
+    def cancel(self):
+        self._cancel.set()
+
+    @property
+    def cancelled(self):
+        return self._cancel.is_set()
+
+    @property
+    def finished(self):
+        return self._done.is_set() or self._cancel.is_set()
+
+    @property
+    def elapsed(self):
+        return (self.finished_at or time.time()) - self.started_at
+
+
+def cancel_active_job():
+    job = st.session_state.get("job")
+    if job is not None:
+        job.cancel()
+    st.session_state.job = None
+
+
+def commit_job(job):
+    """Moves the finished answer into the chat history.
+    Idempotent, and makes no st.* display calls (a rerun can't interrupt it)."""
+    if job.committed:
+        return
+    resp = job.text()
+    if job.cancelled:
+        resp += "\n\n⏹️ *Generation stopped by user.*"
+    if not resp.strip():
+        resp = "⚠️ Empty response from the API."
+
+    if job.usage:
+        input_tokens = job.usage["input_tokens"]
+        output_tokens = job.usage["output_tokens"]
+        source_note = "real API tokens"
+    else:
+        input_tokens = estimate_tokens(job.prompt_text) + sum(
+            estimate_tokens(m["content"]) for m in job.history
+        )
+        output_tokens = estimate_tokens(resp)
+        source_note = "estimated tokens"
+
+    cost = ClaudeAPI.estimate_cost(job.model, input_tokens, output_tokens)
+    job.committed = True
+    st.session_state.session_cost += cost
+    meta = (
+        f"⏱️ Total time: {job.elapsed:.1f}s | "
+        f"🔤 {input_tokens:,} in + {output_tokens:,} out ({source_note}) | "
+        f"💲 Estimated cost: ${cost:.6f} "
+        f"(session: ${st.session_state.session_cost:.6f})"
+    )
+    st.session_state.msgs.append({"role": "assistant", "content": resp, "meta": meta})
+    logger.info(f"✅ Response committed | {job.elapsed:.1f}s | model={job.model} | "
+                f"tokens: {input_tokens}+{output_tokens} | cost: ${cost:.6f}")
+
+
+def render_active_job(slot, live=True):
+    """Shows the in-progress answer. Safe to be interrupted by a rerun:
+    the next run simply calls it again and resumes from the job's buffer."""
+    job = st.session_state.get("job")
+    if job is None:
+        return
+
+    with slot:
+        with st.chat_message("assistant"):
+            if st.button("⏹️ Stop", key="stop_job"):
+                job.cancel()
+            placeholder = st.empty()
+            status = st.empty()
+            last_len = -1
+            while not job.finished:
+                text = job.text()
+                if live and text and len(text) != last_len:
+                    placeholder.markdown(text + "▌")
+                    last_len = len(text)
+                phase = "Generating" if text else "Thinking"
+                status.caption(f"⏳ {phase}… {job.elapsed:.0f}s | {len(text):,} chars")
+                # Throttle: the longer the text, the fewer full re-sends
+                time.sleep(min(2.0, 0.25 + len(text) / 100_000))
+
+    commit_job(job)
+    st.session_state.job = None
+    st.rerun()
+
 # ============ INITIALIZE SESSION STATE ============
 if 'msgs' not in st.session_state:
     st.session_state.msgs = []
@@ -657,6 +793,8 @@ if 'saved_conversations' not in st.session_state:
     st.session_state.saved_conversations = {}
 if 'session_cost' not in st.session_state:
     st.session_state.session_cost = 0.0
+if 'job' not in st.session_state:
+    st.session_state.job = None
 
 # Guard: a legacy model id left in session state would break the selectbox
 if st.session_state.selected_model not in ClaudeAPI.MODELS:
@@ -864,6 +1002,7 @@ with st.sidebar:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🗑️ Clear", use_container_width=True):
+            cancel_active_job()
             st.session_state.msgs = []
             st.session_state.session_cost = 0.0
             st.rerun()
@@ -881,6 +1020,7 @@ with st.sidebar:
     # Logout and About buttons
     st.divider()
     if st.button("🚪 Logout", use_container_width=True):
+        cancel_active_job()
         cookie_manager = get_cookie_manager()
         cookie_manager.delete(COOKIE_NAME, key="delete_auth_cookie_logout")
         st.session_state.authenticated = False
@@ -915,6 +1055,10 @@ for idx, m in enumerate(st.session_state.msgs):
     with st.chat_message(m["role"]):
         display_message_with_metadata(m, idx, st.session_state.enable_mermaid)
 
+# Slot for the in-progress answer. It is FILLED at the very end of the script,
+# so the uploader and chat input below are rendered before the polling loop.
+job_slot = st.container()
+
 # File uploader with extended support
 files = st.file_uploader(
     "📎 Attach files",
@@ -922,111 +1066,73 @@ files = st.file_uploader(
     type=['png','jpg','jpeg','txt','py','csv','md','json','cfg','php','sql','pdf','js','html','css','xml','yml','yaml','xlsx','docx','ipynb','zip']
 )
 
-# Chat input
-if prompt := st.chat_input("Type your message..." if not template_prompt else f"[{template}] Type your text here..."):
+job_active = st.session_state.job is not None
+
+# Chat input (disabled while an answer is being generated)
+if prompt := st.chat_input(
+    "Type your message..." if not template_prompt else f"[{template}] Type your text here...",
+    disabled=job_active,
+):
     logger.info(f"📝 User input received | Length: {len(prompt)}")
 
-    # ✅ CONCATENATE template + user text
     if template_prompt:
         full_prompt = f"{template_prompt}\n\n{prompt}"
-        # Show to user what they typed (without template, to avoid clutter)
+        # Show to user what they typed (without the full template text, to avoid clutter)
         display_prompt = f"**[{template}]**\n\n{prompt}"
     else:
         full_prompt = prompt
         display_prompt = prompt
 
-    st.session_state.msgs.append({"role": "user", "content": display_prompt})
-    with st.chat_message("user"):
-        st.markdown(display_prompt)
-
-    # Handle /model command
+    # Handle /model command (short synchronous call)
     if prompt.strip().lower() == "/model":
         logger.debug("Executing /model command")
-        with st.chat_message("assistant"):
-            try:
-                test_resp = st.session_state.api.client.messages.create(
-                    model=model,
-                    max_tokens=16,  # 1 can be rejected by adaptive-thinking models
-                    messages=[{"role": "user", "content": "Hi"}]
-                )
-                actual_model = test_resp.model
-                expected_label = ClaudeAPI.MODELS.get(model, model)
-                match = "✅ Models match!" if model in actual_model else "⚠️ Models DIFFER!"
-                resp = (
-                    f"🤖 **Selected in UI:** {expected_label} (`{model}`)\n\n"
-                    f"🔍 **Returned by API:** `{actual_model}`\n\n"
-                    f"💲 **Price:** ${ClaudeAPI.get_price(model)}/MTok\n\n"
-                    f"{match}"
-                )
-                logger.info(f"✅ /model command executed | UI: {model} | API: {actual_model}")
-            except Exception as e:
-                logger.error(f"❌ /model command error: {e}")
-                resp = f"❌ Error checking model: {e}"
-            st.markdown(resp)
-        st.session_state.msgs.append({"role": "assistant", "content": resp})
-        st.stop()
-
-    with st.chat_message("assistant"):
-        logger.info(f"💬 Processing message | Model: {model} | Streaming: {use_streaming} | Template: {template or 'None'}")
-        history = [
-            {"role": m["role"], "content": m["content"]}
-            for m in st.session_state.msgs[:-1]
-        ]
-        # ✅ Send full_prompt (template + text) instead of just prompt
-        # `temp` is None unless the model is in MODELS_WITH_TEMPERATURE.
-        stream_args = (full_prompt, model, temp, max_t, history, files, st.session_state.system_prompt, effort)
-
-        start_time = time.time()
-
-        if use_streaming:
-            logger.debug("Using streaming mode")
-            message_placeholder = st.empty()
-            full_response = ""
-
-            for chunk in st.session_state.api.send_message_stream(*stream_args):
-                full_response += chunk
-                message_placeholder.markdown(full_response + "▌")
-
-            message_placeholder.empty()
-            render_message_with_mermaid(full_response, st.session_state.enable_mermaid)
-            resp = full_response
-            logger.info(f"✅ Streaming response completed | Length: {len(resp)}")
-        else:
-            logger.debug("Using non-streaming mode")
-            with st.spinner("Thinking..."):
-                resp = "".join(st.session_state.api.send_message_stream(*stream_args))
-
-            render_message_with_mermaid(resp, st.session_state.enable_mermaid)
-            logger.info(f"✅ Non-streaming response completed | Length: {len(resp)}")
-
-        elapsed = time.time() - start_time
-
-        # ---- Total time + estimated cost ----
-        usage = st.session_state.api.last_usage
-        if usage:
-            input_tokens = usage["input_tokens"]
-            output_tokens = usage["output_tokens"]
-            source_note = "real API tokens"
-        else:
-            # Fallback: local estimate (~4 chars/token)
-            input_tokens = estimate_tokens(full_prompt) + sum(
-                estimate_tokens(m["content"]) for m in history
+        try:
+            test_resp = st.session_state.api.client.messages.create(
+                model=model,
+                max_tokens=16,  # 1 can be rejected by adaptive-thinking models
+                messages=[{"role": "user", "content": "Hi"}]
             )
-            output_tokens = estimate_tokens(resp)
-            source_note = "estimated tokens"
-
-        cost = ClaudeAPI.estimate_cost(model, input_tokens, output_tokens)
-        st.session_state.session_cost += cost
-
-        st.caption(
-            f"⏱️ Total time: {elapsed:.1f}s | "
-            f"🔤 {input_tokens:,} in + {output_tokens:,} out ({source_note}) | "
-            f"💲 Estimated cost: ${cost:.6f} "
-            f"(session: ${st.session_state.session_cost:.6f})"
-        )
-        logger.info(
-            f"⏱️ {elapsed:.1f}s | model={model} | tokens: {input_tokens}+{output_tokens} "
-            f"| cost: ${cost:.6f} | session: ${st.session_state.session_cost:.6f}"
-        )
-
+            actual_model = test_resp.model
+            expected_label = ClaudeAPI.MODELS.get(model, model)
+            match = "✅ Models match!" if model in actual_model else "⚠️ Models DIFFER!"
+            resp = (
+                f"🤖 **Selected in UI:** {expected_label} (`{model}`)\n\n"
+                f"🔍 **Returned by API:** `{actual_model}`\n\n"
+                f"💲 **Price:** ${ClaudeAPI.get_price(model)}/MTok\n\n"
+                f"{match}"
+            )
+            logger.info(f"✅ /model command executed | UI: {model} | API: {actual_model}")
+        except Exception as e:
+            logger.error(f"❌ /model command error: {e}")
+            resp = f"❌ Error checking model: {e}"
+        st.session_state.msgs.append({"role": "user", "content": display_prompt})
         st.session_state.msgs.append({"role": "assistant", "content": resp})
+        st.rerun()
+
+    # History = everything BEFORE this new user message (role + content only)
+    history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.msgs]
+
+    # Files are read here, in the main thread (the background thread must not touch st.*)
+    content, file_errors = st.session_state.api.build_user_content(full_prompt, files)
+    if file_errors:
+        display_prompt += "\n\n" + "\n".join(f"⚠️ Could not process file {e}" for e in file_errors)
+
+    st.session_state.msgs.append({"role": "user", "content": display_prompt})
+
+    logger.info(f"💬 Starting job | Model: {model} | Streaming: {use_streaming} | "
+                f"Files: {len(files or [])} | Template: {template or 'None'}")
+    st.session_state.job = StreamJob(
+        api=st.session_state.api,
+        content=content,
+        model=model,
+        temp=temp,
+        max_t=max_t,
+        history=history,
+        system_prompt=st.session_state.system_prompt,
+        effort=effort,
+        prompt_text=full_prompt,
+    )
+    st.rerun()
+
+# Must be the LAST thing in the script (it blocks while polling the job)
+render_active_job(job_slot, live=use_streaming)
