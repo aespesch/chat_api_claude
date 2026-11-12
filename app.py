@@ -1,4 +1,4 @@
-import os, streamlit as st, anthropic, base64, warnings, re, json, html, io, hashlib, logging
+import os, streamlit as st, anthropic, base64, warnings, re, json, html, io, hashlib, logging, time
 from pathlib import Path
 from streamlit.components.v1 import html as st_html
 from datetime import datetime, timedelta
@@ -23,10 +23,10 @@ st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
 # ============ CONSTANTS ============
 
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
 COOKIE_NAME = "claude_chat_auth"
 COOKIE_EXPIRY_DAYS = 2  # 48 hours
-DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_MODEL = "claude-haiku-5-5"
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 MERMAID_PATTERN = r'```mermaid\s*\n(.*?)```'       # for re.findall — extracts diagram content
 MERMAID_SPLIT_PATTERN = r'```mermaid\s*\n.*?```'   # for re.split  — splits text around blocks
@@ -149,17 +149,26 @@ class APIError(Exception):
 
 class ClaudeAPI:
     MODELS = {
-        "claude-fable-5": "Claude Fable 5 (Most Capable)",
-        "claude-opus-5": "Claude Opus 5 (Most Intelligent)",
-        "claude-sonnet-5": "Claude Sonnet 5 (Best Speed/Intelligence)",
-        "claude-haiku-4-5": "Claude Haiku 4.5 (Fastest)",
+        "claude-fable-5-2": "Claude Fable 5.2 (Most Capable)",
+        "claude-opus-5-5": "Claude Opus 5.5 (Most Intelligent)",
+        "claude-sonnet-5-5": "Claude Sonnet 5.5 (Best Speed/Intelligence)",
+        "claude-haiku-5-5": "Claude Haiku 5.5 (Fastest)",
+    }
+
+    # Price in USD per million tokens (MTok).
+    # Single value per model: applied to both input and output tokens.
+    MODEL_PRICES = {
+        "claude-fable-5-2": 40.0,
+        "claude-opus-5-5": 20.0,
+        "claude-sonnet-5-5": 10.0,
+        "claude-haiku-5-5": 0.5,
     }
 
     MODEL_MAX_TOKENS = {
-        "claude-fable-5": 128000,
-        "claude-opus-5": 128000,
-        "claude-sonnet-5": 128000,
-        "claude-haiku-4-5": 64000,
+        "claude-fable-5-2": 128000,
+        "claude-opus-5-5": 128000,
+        "claude-sonnet-5-5": 128000,
+        "claude-haiku-5-5": 64000,
     }
 
     # ------------------------------------------------------------------
@@ -170,8 +179,7 @@ class ClaudeAPI:
     # rejects it server-side with:
     #     400 invalid_request_error:
     #     "temperature: Extra inputs are not permitted"
-    # ...even when smuggled through `extra_body`. This includes
-    # claude-haiku-4-5, which previously accepted it.
+    # ...even when smuggled through `extra_body`.
     #
     # => The allowlist is intentionally EMPTY: temperature is never sent.
     #    If/when a future model re-enables it, just add its id here and the
@@ -179,19 +187,19 @@ class ClaudeAPI:
     MODELS_WITH_TEMPERATURE: set = set()
 
     # Models that accept the `effort` parameter (sent as output_config.effort),
-    # mapped to the effort levels each one supports. Haiku 4.5 has no effort.
+    # mapped to the effort levels each one supports. Haiku has no effort.
     MODEL_EFFORT_LEVELS = {
-        "claude-fable-5": ["low", "medium", "high", "xhigh", "max"],
-        "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
-        "claude-sonnet-5": ["low", "medium", "high", "xhigh", "max"],
+        "claude-fable-5-2": ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],
+        "claude-sonnet-5-5": ["low", "medium", "high", "xhigh", "max"],
     }
     DEFAULT_EFFORT = "high"  # API default; good balance of quality vs. cost
 
-    # Fable 5 / Opus 5 may decline a request (stop_reason "refusal"). With
+    # Fable / Opus may decline a request (stop_reason "refusal"). With
     # server-side fallback enabled the API re-runs the same request on a
     # fallback model inside the same call, routed by refusal category.
     ENABLE_REFUSAL_FALLBACK = True
-    REFUSAL_FALLBACK_MODELS = {"claude-fable-5", "claude-opus-5"}
+    REFUSAL_FALLBACK_MODELS = {"claude-fable-5-2", "claude-opus-5-5"}
     REFUSAL_FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
     PROMPT_TEMPLATES = {
@@ -217,6 +225,17 @@ class ClaudeAPI:
     def get_max_tokens(cls, model):
         """Returns maximum token limit for a specific model"""
         return cls.MODEL_MAX_TOKENS.get(model, 4000)
+
+    @classmethod
+    def get_price(cls, model):
+        """Returns price in USD per million tokens (MTok) for a model"""
+        return cls.MODEL_PRICES.get(model, 0.0)
+
+    @classmethod
+    def estimate_cost(cls, model, input_tokens, output_tokens):
+        """Estimates cost in USD given token counts"""
+        price = cls.get_price(model)
+        return (input_tokens + output_tokens) / 1_000_000 * price
 
     @classmethod
     def supports_temperature(cls, model: str) -> bool:
@@ -255,6 +274,7 @@ class ClaudeAPI:
         return kwargs
 
     def __init__(self):
+        self.last_usage = None  # real token usage from the latest API call
         self.client = None
         self.api_key = self._get_api_key()
 
@@ -294,7 +314,7 @@ class ClaudeAPI:
         return None
 
     def _validate_api_key(self):
-        """Validate API key with minimal call"""
+        """Validate API key with minimal call (uses the cheapest model)"""
         logger.debug("Validating API key...")
         try:
             self.client.messages.create(
@@ -316,6 +336,7 @@ class ClaudeAPI:
         models listed in MODELS_WITH_TEMPERATURE (currently none).
         """
         logger.debug(f"send_message_stream() called | model={model}, files={len(files or [])}, effort={effort}")
+        self.last_usage = None
 
         if not self.client:
             logger.error("❌ Client not initialized")
@@ -380,8 +401,15 @@ class ClaudeAPI:
                     chunk_count += 1
                     yield text
                 final = stream.get_final_message()
+                try:
+                    self.last_usage = {
+                        "input_tokens": final.usage.input_tokens,
+                        "output_tokens": final.usage.output_tokens,
+                    }
+                except Exception:
+                    self.last_usage = None
                 logger.debug(f"✅ Stream completed | {chunk_count} chunks | "
-                             f"stop_reason={final.stop_reason}")
+                             f"stop_reason={final.stop_reason} | usage={self.last_usage}")
                 if final.stop_reason == "refusal":
                     yield "\n\n⚠️ The model declined to answer this request."
         except anthropic.RateLimitError as e:
@@ -562,7 +590,13 @@ def load_conversation(filename):
     if filename in st.session_state.saved_conversations:
         data = st.session_state.saved_conversations[filename]
         st.session_state.msgs = data["messages"]
-        st.session_state.selected_model = data.get("model", DEFAULT_MODEL)
+        saved_model = data.get("model", DEFAULT_MODEL)
+        # Guard against legacy/unknown model ids saved by older app versions
+        if saved_model not in ClaudeAPI.MODELS:
+            logger.warning(f"⚠️ Unknown saved model '{saved_model}' — falling back to {DEFAULT_MODEL}")
+            saved_model = DEFAULT_MODEL
+        st.session_state.selected_model = saved_model
+        st.session_state.model_selector = saved_model
         st.success("Conversation loaded")
         st.rerun()
 
@@ -621,6 +655,14 @@ if 'enable_mermaid' not in st.session_state:
     st.session_state.enable_mermaid = True
 if 'saved_conversations' not in st.session_state:
     st.session_state.saved_conversations = {}
+if 'session_cost' not in st.session_state:
+    st.session_state.session_cost = 0.0
+
+# Guard: a legacy model id left in session state would break the selectbox
+if st.session_state.selected_model not in ClaudeAPI.MODELS:
+    st.session_state.selected_model = DEFAULT_MODEL
+if st.session_state.model_selector not in ClaudeAPI.MODELS:
+    st.session_state.model_selector = DEFAULT_MODEL
 
 # ============ SIDEBAR ============
 with st.sidebar:
@@ -696,11 +738,11 @@ with st.sidebar:
             </style>
         """, unsafe_allow_html=True)
 
-    # Model selection
+    # Model selection (price shown inside the dropdown)
     model = st.selectbox(
         "Model",
         list(ClaudeAPI.MODELS.keys()),
-        format_func=lambda x: ClaudeAPI.MODELS[x],
+        format_func=lambda x: f"{ClaudeAPI.MODELS[x]} — ${ClaudeAPI.MODEL_PRICES[x]}/MTok",
         key='model_selector'
     )
 
@@ -709,7 +751,11 @@ with st.sidebar:
         st.rerun()
 
     max_tokens_limit = ClaudeAPI.get_max_tokens(model)
-    st.info(f"📊 Max tokens for this model: {max_tokens_limit:,}")
+    model_price = ClaudeAPI.get_price(model)
+    st.info(
+        f"📊 Max tokens: {max_tokens_limit:,}\n\n"
+        f"💲 Price: **${model_price}/MTok**"
+    )
 
     # Parameters
     # Temperature slider is shown ONLY for models that still accept the
@@ -741,6 +787,12 @@ with st.sidebar:
         max_tokens_limit,
         max_tokens_limit,
         100
+    )
+
+    # Live cost ceiling for the current settings
+    st.caption(
+        f"💸 Max output cost for this setting: "
+        f"~${max_t / 1_000_000 * model_price:.4f}"
     )
 
     use_streaming = st.checkbox("🔄 Enable Streaming", value=True,
@@ -799,9 +851,13 @@ with st.sidebar:
             col1.metric("Messages", total_msgs)
             col2.metric("Tokens", f"{total_tokens:,}")
 
+            st.metric("Session cost (est.)", f"${st.session_state.session_cost:.6f}")
+
             if total_msgs > 0:
                 df = create_usage_dataframe(st.session_state.msgs)
                 st.line_chart(df.set_index('Message')['Cumulative'])
+        else:
+            st.caption("No messages yet.")
 
     # Buttons
     st.divider()
@@ -809,6 +865,7 @@ with st.sidebar:
     with col1:
         if st.button("🗑️ Clear", use_container_width=True):
             st.session_state.msgs = []
+            st.session_state.session_cost = 0.0
             st.rerun()
     with col2:
         if st.button("📋 Copy All", use_container_width=True):
@@ -828,6 +885,7 @@ with st.sidebar:
         cookie_manager.delete(COOKIE_NAME, key="delete_auth_cookie_logout")
         st.session_state.authenticated = False
         st.session_state.msgs = []
+        st.session_state.session_cost = 0.0
         st.rerun()
 
     if st.button("ℹ️ About", use_container_width=True):
@@ -835,6 +893,7 @@ with st.sidebar:
             f"**Claude Chat** v{APP_VERSION}\n\n"
             f"Default model: `{DEFAULT_MODEL}`\n\n"
             f"Active model: `{st.session_state.selected_model}`\n\n"
+            f"Price: `${ClaudeAPI.get_price(st.session_state.selected_model)}/MTok`\n\n"
             f"Temperature: `disabled (unsupported by API)`"
         )
 
@@ -896,6 +955,7 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else f"
                 resp = (
                     f"🤖 **Selected in UI:** {expected_label} (`{model}`)\n\n"
                     f"🔍 **Returned by API:** `{actual_model}`\n\n"
+                    f"💲 **Price:** ${ClaudeAPI.get_price(model)}/MTok\n\n"
                     f"{match}"
                 )
                 logger.info(f"✅ /model command executed | UI: {model} | API: {actual_model}")
@@ -915,6 +975,8 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else f"
         # ✅ Send full_prompt (template + text) instead of just prompt
         # `temp` is None unless the model is in MODELS_WITH_TEMPERATURE.
         stream_args = (full_prompt, model, temp, max_t, history, files, st.session_state.system_prompt, effort)
+
+        start_time = time.time()
 
         if use_streaming:
             logger.debug("Using streaming mode")
@@ -936,5 +998,35 @@ if prompt := st.chat_input("Type your message..." if not template_prompt else f"
 
             render_message_with_mermaid(resp, st.session_state.enable_mermaid)
             logger.info(f"✅ Non-streaming response completed | Length: {len(resp)}")
+
+        elapsed = time.time() - start_time
+
+        # ---- Total time + estimated cost ----
+        usage = st.session_state.api.last_usage
+        if usage:
+            input_tokens = usage["input_tokens"]
+            output_tokens = usage["output_tokens"]
+            source_note = "real API tokens"
+        else:
+            # Fallback: local estimate (~4 chars/token)
+            input_tokens = estimate_tokens(full_prompt) + sum(
+                estimate_tokens(m["content"]) for m in history
+            )
+            output_tokens = estimate_tokens(resp)
+            source_note = "estimated tokens"
+
+        cost = ClaudeAPI.estimate_cost(model, input_tokens, output_tokens)
+        st.session_state.session_cost += cost
+
+        st.caption(
+            f"⏱️ Total time: {elapsed:.1f}s | "
+            f"🔤 {input_tokens:,} in + {output_tokens:,} out ({source_note}) | "
+            f"💲 Estimated cost: ${cost:.6f} "
+            f"(session: ${st.session_state.session_cost:.6f})"
+        )
+        logger.info(
+            f"⏱️ {elapsed:.1f}s | model={model} | tokens: {input_tokens}+{output_tokens} "
+            f"| cost: ${cost:.6f} | session: ${st.session_state.session_cost:.6f}"
+        )
 
         st.session_state.msgs.append({"role": "assistant", "content": resp})
