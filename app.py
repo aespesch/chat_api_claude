@@ -1,4 +1,4 @@
-import os, streamlit as st, anthropic, base64, warnings, re, json, html, io, hashlib, logging, time, threading
+import os, streamlit as st, anthropic, base64, warnings, re, json, html, io, hashlib, logging, time, threading, uuid, tempfile
 from pathlib import Path
 from streamlit.components.v1 import html as st_html
 from datetime import datetime, timedelta
@@ -23,13 +23,18 @@ st.set_page_config(page_title="Claude Chat", page_icon="🤖", layout="wide")
 
 # ============ CONSTANTS ============
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 COOKIE_NAME = "claude_chat_auth"
 COOKIE_EXPIRY_DAYS = 2  # 48 hours
 DEFAULT_MODEL = "claude-haiku-5-5"
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 MERMAID_PATTERN = r'```mermaid\s*\n(.*?)```'       # for re.findall — extracts diagram content
 MERMAID_SPLIT_PATTERN = r'```mermaid\s*\n.*?```'   # for re.split  — splits text around blocks
+
+# Persistence
+CHAT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+PARTIAL_FLUSH_SECONDS = 1.0     # how often the background thread saves partial text
+IMAGE_TOKEN_ESTIMATE = 1600     # rough token estimate per image (fallback cost only)
 
 # Startup log — visible in Streamlit Cloud logs
 logger.info(f"🚀 Loading Claude Chat v{APP_VERSION} | Default model: {DEFAULT_MODEL}")
@@ -330,28 +335,48 @@ class ClaudeAPI:
 
     def build_user_content(self, msg, files=None):
         """Builds the user content blocks. Runs in the MAIN script thread
-        (reads UploadedFile objects). Returns (content, errors)."""
-        content = [{"type": "text", "text": sanitize_input(msg)}]
-        errors = []
+        (reads UploadedFile objects).
+
+        Returns (content, attached_names, errors):
+          - content: list of API content blocks (text + images + file texts)
+          - attached_names: names of the files successfully added to `content`
+          - errors: human-readable error strings for files that failed
+        """
+        content, attached, errors = [], [], []
+
+        text = sanitize_input(msg)
+        if text:  # the API rejects empty text blocks
+            content.append({"type": "text", "text": text})
+
         for f in (files or []):
             try:
                 f.seek(0)
                 processed = process_file(f)
                 if processed:
                     content.append(processed)
+                    attached.append(f.name)
                     logger.debug(f"✅ Processed file: {f.name}")
+                else:
+                    errors.append(f"{f.name}: unsupported file type")
             except Exception as e:
                 logger.error(f"❌ Error processing {f.name}: {e}")
                 errors.append(f"{f.name}: {e}")
-        return content, errors
 
-    def send_message_stream(self, content, model, temp=None, max_t=2000, hist=None, system_prompt=None, effort=None):
+        if not content:
+            content.append({"type": "text", "text": "(empty message)"})
+        return content, attached, errors
+
+    def send_message_stream(self, content, model, temp=None, max_t=2000, hist=None,
+                            system_prompt=None, effort=None, on_usage=None):
         """
         Stream generator. Receives the already-built `content` blocks.
         IMPORTANT: runs inside a background thread -> must NOT call st.* here.
 
         `temp` is accepted for signature compatibility but is only forwarded to
         models listed in MODELS_WITH_TEMPERATURE (currently none).
+
+        `on_usage(dict)` is called with the real token usage when the stream
+        completes (per-job callback, so concurrent jobs don't clobber each other).
         """
         logger.debug(f"send_message_stream() called | model={model}, effort={effort}")
         self.last_usage = None
@@ -395,14 +420,20 @@ class ClaudeAPI:
                     yield text
                 final = stream.get_final_message()
                 try:
-                    self.last_usage = {
+                    usage = {
                         "input_tokens": final.usage.input_tokens,
                         "output_tokens": final.usage.output_tokens,
                     }
                 except Exception:
-                    self.last_usage = None
+                    usage = None
+                self.last_usage = usage
+                if on_usage is not None:
+                    try:
+                        on_usage(usage)
+                    except Exception as cb_err:
+                        logger.warning(f"⚠️ on_usage callback failed: {cb_err}")
                 logger.info(f"✅ Stream completed | {chunk_count} chunks | "
-                            f"stop_reason={final.stop_reason} | usage={self.last_usage}")
+                            f"stop_reason={final.stop_reason} | usage={usage}")
                 if final.stop_reason == "refusal":
                     yield "\n\n⚠️ The model declined to answer this request."
                 elif final.stop_reason == "max_tokens":
@@ -501,6 +532,56 @@ def estimate_tokens(text):
     """Estimate token count"""
     return len(text) // 4
 
+def estimate_content_tokens(content):
+    """Estimate tokens for either a plain string or a list of API content blocks."""
+    if isinstance(content, str):
+        return estimate_tokens(content)
+    total = 0
+    for block in content or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            total += estimate_tokens(block.get("text", ""))
+        elif block.get("type") == "image":
+            total += IMAGE_TOKEN_ESTIMATE
+    return total
+
+def message_context_tokens(message):
+    """Estimated tokens this message contributes to the context (incl. attachments)."""
+    return estimate_content_tokens(message.get("api_content") or message.get("content", ""))
+
+def build_api_history(messages, keep_attachments=True):
+    """
+    Builds the history sent to the API from stored messages.
+
+    User messages carry:
+      - `api_content`: the full content blocks (text + images + file contents)
+      - `prompt_text`: the real prompt (template text included)
+    so follow-up questions still "see" previously attached files.
+    `content` is only the display text and is used as a fallback for legacy messages.
+    """
+    hist = []
+    for m in messages:
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+
+        if role == "user":
+            if keep_attachments and m.get("api_content"):
+                content = m["api_content"]
+            else:
+                content = m.get("prompt_text") or m.get("content", "")
+                if m.get("attachments"):
+                    content += ("\n\n[Attachments omitted from context: "
+                                + ", ".join(m["attachments"]) + "]")
+        else:
+            content = m.get("content", "")
+
+        if not content:  # the API rejects empty messages
+            continue
+        hist.append({"role": role, "content": content})
+    return hist
+
 def extract_mermaid_diagrams(text):
     """Extract all Mermaid diagrams from text"""
     return re.findall(MERMAID_PATTERN, text, re.DOTALL)
@@ -555,53 +636,18 @@ def display_message_with_metadata(message, idx, render_mermaid_diagrams=True):
 
     with col1:
         render_message_with_mermaid(message['content'], render_mermaid_diagrams)
+        if message.get("attachments"):
+            st.caption("📎 In context: " + ", ".join(message["attachments"]))
         if message.get("meta"):
             st.caption(message["meta"])
 
     with col2:
-        token_count = estimate_tokens(message['content'])
-        st.caption(f"🔤 {token_count}")
+        token_count = message_context_tokens(message)
+        st.caption(f"🔤 {token_count:,}")
 
     with col3:
         if st.button("📋", key=f"copy_{idx}", help="Copy"):
             st.code(message['content'])
-
-def save_conversation():
-    """Save current conversation"""
-    if not st.session_state.msgs:
-        st.warning("No messages to save")
-        return
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"chat_{timestamp}.json"
-
-    # Copy messages so later appends to the live chat don't mutate the saved one
-    st.session_state.saved_conversations[filename] = {
-        "timestamp": timestamp,
-        "messages": [dict(m) for m in st.session_state.msgs],
-        "model": st.session_state.selected_model
-    }
-    st.success(f"Conversation saved as {filename}")
-
-def load_conversation(filename):
-    """Load saved conversation"""
-    if filename in st.session_state.saved_conversations:
-        data = st.session_state.saved_conversations[filename]
-        cancel_active_job()
-        st.session_state.msgs = [dict(m) for m in data["messages"]]
-        saved_model = data.get("model", DEFAULT_MODEL)
-        # Guard against legacy/unknown model ids saved by older app versions
-        if saved_model not in ClaudeAPI.MODELS:
-            logger.warning(f"⚠️ Unknown saved model '{saved_model}' — falling back to {DEFAULT_MODEL}")
-            saved_model = DEFAULT_MODEL
-        st.session_state.selected_model = saved_model
-        st.session_state.model_selector = saved_model
-        st.success("Conversation loaded")
-        st.rerun()
-
-def list_saved_conversations():
-    """List all saved conversations"""
-    return list(st.session_state.saved_conversations.keys())
 
 def export_conversation(format_type="Markdown"):
     """Export conversation in different formats"""
@@ -612,10 +658,16 @@ def export_conversation(format_type="Markdown"):
         content = "# Chat Export\n\n"
         for msg in st.session_state.msgs:
             role = msg['role'].capitalize()
-            content += f"## {role}\n\n{msg['content']}\n\n---\n\n"
+            content += f"## {role}\n\n{msg['content']}\n\n"
+            if msg.get("attachments"):
+                content += f"_Attachments: {', '.join(msg['attachments'])}_\n\n"
+            content += "---\n\n"
         return content
     elif format_type == "JSON":
-        return json.dumps(st.session_state.msgs, indent=2)
+        # api_content is omitted: it may contain large base64 images
+        light = [{k: v for k, v in m.items() if k != "api_content"}
+                 for m in st.session_state.msgs]
+        return json.dumps(light, indent=2, ensure_ascii=False)
 
     return None
 
@@ -626,7 +678,7 @@ def create_usage_dataframe(messages):
     data = []
     total_tokens = 0
     for i, msg in enumerate(messages):
-        tokens = estimate_tokens(msg['content'])
+        tokens = message_context_tokens(msg)
         total_tokens += tokens
         data.append({
             'Message': i + 1,
@@ -637,58 +689,468 @@ def create_usage_dataframe(messages):
 
     return pd.DataFrame(data)
 
-# ============ BACKGROUND GENERATION (survives Streamlit reruns) ============
+# ============ DISK PERSISTENCE ============
+
+def _now_iso():
+    return datetime.now().isoformat(timespec="seconds")
+
+def is_valid_chat_id(chat_id) -> bool:
+    """Only [A-Za-z0-9_-]: prevents path traversal through the ?chat= URL param."""
+    return isinstance(chat_id, str) and bool(CHAT_ID_PATTERN.match(chat_id))
+
+def new_chat_id() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
+
+def _resolve_data_dir() -> Path:
+    """Storage directory: env CHAT_DATA_DIR > secrets CHAT_DATA_DIR > ./chat_data > tmp."""
+    configured = os.getenv("CHAT_DATA_DIR")
+    if not configured:
+        try:
+            configured = st.secrets.get("CHAT_DATA_DIR")
+        except Exception:
+            configured = None
+
+    candidates = [Path(configured).expanduser()] if configured else []
+    candidates += [
+        Path(__file__).resolve().parent / "chat_data",
+        Path(tempfile.gettempdir()) / "claude_chat_data",
+    ]
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write_test"
+            probe.write_text("ok")
+            probe.unlink()
+            return candidate
+        except OSError as e:
+            logger.warning(f"⚠️ Storage dir not writable: {candidate} ({e})")
+    raise RuntimeError("No writable directory available for chat storage")
+
+
+class ChatStore:
+    """
+    JSON-file storage for conversations.
+
+      <root>/chats/<chat_id>.json     full conversation (messages, cost, pending job)
+      <root>/partials/<job_id>.json   partial text of an in-progress answer
+      <root>/index.json               lightweight list for the sidebar
+
+    Thread-safe (per-chat RLocks) and crash-safe (atomic write + os.replace).
+    Lock order used across the app: job commit lock -> chat lock -> index lock
+    (the job registry lock is always taken last and never held while taking others).
+    """
+
+    SCHEMA_VERSION = 1
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
+        self.chats_dir = self.root / "chats"
+        self.partials_dir = self.root / "partials"
+        self.index_path = self.root / "index.json"
+        self.chats_dir.mkdir(parents=True, exist_ok=True)
+        self.partials_dir.mkdir(parents=True, exist_ok=True)
+        self._locks = {}
+        self._locks_guard = threading.Lock()
+        self._index_lock = threading.RLock()
+        logger.info(f"💾 Chat storage at: {self.root}")
+
+    # ---------- low level ----------
+    @staticmethod
+    def _write_json_atomic(path: Path, obj):
+        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            for attempt in range(5):
+                try:
+                    os.replace(tmp, path)
+                    return
+                except PermissionError:  # Windows: target briefly opened by a reader
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.05)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _read_json(path: Path):
+        """Parsed JSON, or None if missing. Corrupt files are quarantined, not overwritten."""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return None
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            bad = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
+            logger.error(f"❌ Corrupt JSON {path.name} ({e}) — moved to {bad.name}")
+            try:
+                path.rename(bad)
+            except OSError:
+                pass
+            return None
+
+    def lock(self, chat_id):
+        with self._locks_guard:
+            lk = self._locks.get(chat_id)
+            if lk is None:
+                lk = self._locks[chat_id] = threading.RLock()
+            return lk
+
+    def _chat_path(self, chat_id) -> Path:
+        if not is_valid_chat_id(chat_id):
+            raise ValueError(f"Invalid chat id: {chat_id!r}")
+        return self.chats_dir / f"{chat_id}.json"
+
+    def _partial_path(self, job_id) -> Path:
+        if not is_valid_chat_id(job_id):
+            raise ValueError(f"Invalid job id: {job_id!r}")
+        return self.partials_dir / f"{job_id}.json"
+
+    # ---------- conversations ----------
+    @classmethod
+    def new_chat_data(cls, chat_id, model=DEFAULT_MODEL):
+        now = _now_iso()
+        return {
+            "version": cls.SCHEMA_VERSION,
+            "id": chat_id,
+            "created": now,
+            "updated": now,
+            "model": model,
+            "cost": 0.0,
+            "messages": [],
+            "pending": None,   # {"job_id", "model", "started_at"} while generating
+        }
+
+    def exists(self, chat_id) -> bool:
+        return is_valid_chat_id(chat_id) and self._chat_path(chat_id).exists()
+
+    def load(self, chat_id) -> dict:
+        """Loads a chat; returns fresh (unsaved) data if it doesn't exist yet."""
+        data = self._read_json(self._chat_path(chat_id))
+        if not isinstance(data, dict):
+            data = self.new_chat_data(chat_id)
+        defaults = self.new_chat_data(chat_id)
+        for key, value in defaults.items():
+            data.setdefault(key, value)
+        if not isinstance(data.get("messages"), list):
+            data["messages"] = []
+        return data
+
+    def save(self, chat_id, data):
+        with self.lock(chat_id):
+            data["id"] = chat_id
+            data["updated"] = _now_iso()
+            self._write_json_atomic(self._chat_path(chat_id), data)
+            self._index_set(chat_id, self._index_entry(data))
+
+    def update(self, chat_id, mutator) -> dict:
+        """Atomic read-modify-write: load -> mutator(data) -> save."""
+        with self.lock(chat_id):
+            data = self.load(chat_id)
+            mutator(data)
+            self.save(chat_id, data)
+            return data
+
+    def delete(self, chat_id):
+        with self.lock(chat_id):
+            path = self._chat_path(chat_id)
+            data = self._read_json(path)
+            if isinstance(data, dict) and isinstance(data.get("pending"), dict):
+                self.delete_partial(data["pending"].get("job_id"))
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            self._index_set(chat_id, None)
+        logger.info(f"🗑️ Chat deleted: {chat_id}")
+
+    # ---------- partial answers ----------
+    def write_partial(self, job_id, payload: dict):
+        self._write_json_atomic(self._partial_path(job_id), payload)
+
+    def read_partial(self, job_id):
+        if not is_valid_chat_id(job_id):
+            return None
+        data = self._read_json(self._partial_path(job_id))
+        return data if isinstance(data, dict) else None
+
+    def delete_partial(self, job_id):
+        if not is_valid_chat_id(job_id):
+            return
+        try:
+            self._partial_path(job_id).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.warning(f"⚠️ Could not delete partial {job_id}: {e}")
+
+    # ---------- index ----------
+    @staticmethod
+    def _index_entry(data):
+        title = "(empty)"
+        for m in data.get("messages", []):
+            if m.get("role") == "user":
+                t = re.sub(r"\s+", " ", str(m.get("content", ""))).strip()
+                if t:
+                    title = (t[:60] + "…") if len(t) > 60 else t
+                break
+        return {
+            "title": title,
+            "created": data.get("created", ""),
+            "updated": data.get("updated", ""),
+            "messages": len(data.get("messages", [])),
+            "pending": bool(data.get("pending")),
+        }
+
+    def _rebuild_index(self):
+        idx = {}
+        for p in self.chats_dir.glob("*.json"):
+            if not is_valid_chat_id(p.stem):
+                continue
+            data = self._read_json(p)
+            if isinstance(data, dict):
+                idx[p.stem] = self._index_entry(data)
+        self._write_json_atomic(self.index_path, idx)
+        logger.info(f"🔁 Chat index rebuilt ({len(idx)} chats)")
+        return idx
+
+    def _load_index(self):
+        idx = self._read_json(self.index_path)
+        if not isinstance(idx, dict):
+            idx = self._rebuild_index()
+        return idx
+
+    def _index_set(self, chat_id, entry):
+        with self._index_lock:
+            idx = self._load_index()
+            if entry is None:
+                idx.pop(chat_id, None)
+            else:
+                idx[chat_id] = entry
+            self._write_json_atomic(self.index_path, idx)
+
+    def list_chats(self):
+        with self._index_lock:
+            idx = self._load_index()
+        items = [{"id": k, **v} for k, v in idx.items()
+                 if is_valid_chat_id(k) and isinstance(v, dict)]
+        items.sort(key=lambda c: c.get("updated", ""), reverse=True)
+        return items
+
+    def most_recent(self):
+        for c in self.list_chats():
+            if self.exists(c["id"]):
+                return c["id"]
+        return None
+
+
+class JobRegistry:
+    """Process-wide registry of running jobs, so a NEW session (tab reopened,
+    session expired) can re-attach to a generation that is still running."""
+
+    def __init__(self):
+        self._jobs = {}
+        self._lock = threading.Lock()
+
+    def add(self, job):
+        with self._lock:
+            self._jobs[job.job_id] = job
+
+    def remove(self, job_id):
+        with self._lock:
+            self._jobs.pop(job_id, None)
+
+    def get(self, job_id):
+        if not job_id:
+            return None
+        with self._lock:
+            return self._jobs.get(job_id)
+
+    def for_chat(self, chat_id):
+        with self._lock:
+            return [j for j in self._jobs.values() if j.chat_id == chat_id]
+
+
+@st.cache_resource(show_spinner=False)
+def get_chat_store():
+    return ChatStore(_resolve_data_dir())
+
+@st.cache_resource(show_spinner=False)
+def get_job_registry():
+    return JobRegistry()
+
+STORE = get_chat_store()
+JOBS = get_job_registry()
+
+# ============ BACKGROUND GENERATION (survives reruns, sessions and tab closes) ============
 
 class StreamJob:
     """
     Runs the API stream in a background thread and accumulates the text.
-    Lives in st.session_state, so a rerun (websocket reconnect, widget click...)
-    no longer kills the generation nor loses the answer.
+
+    The job does NOT depend on st.session_state:
+      - partial text is flushed to disk every PARTIAL_FLUSH_SECONDS;
+      - when finished (or stopped), the thread itself appends the answer to the
+        conversation file on disk.
+    So even if the browser session is destroyed, the answer is not lost; and if
+    the server restarts mid-generation, the partial text is recovered on reopen.
     """
 
-    def __init__(self, api, content, model, temp, max_t, history, system_prompt, effort, prompt_text):
+    def __init__(self, store, registry, chat_id, api, content, model, temp, max_t,
+                 history, system_prompt, effort, input_tokens_est):
+        self.job_id = uuid.uuid4().hex
+        self.chat_id = chat_id
+        self.store = store
+        self.registry = registry
         self.model = model
         self.history = history
-        self.prompt_text = prompt_text
+        self.input_tokens_est = input_tokens_est
         self.started_at = time.time()
         self.finished_at = None
         self.usage = None
+        self.cost = 0.0
         self.committed = False
+        self.commit_error = None
+        self._discard = False
         self._parts = []
         self._lock = threading.Lock()
+        self._commit_lock = threading.RLock()
         self._done = threading.Event()
         self._cancel = threading.Event()
+        self._args = (api, content, temp, max_t, system_prompt, effort)
+
+    def start(self):
         threading.Thread(
             target=self._run,
-            args=(api, content, temp, max_t, system_prompt, effort),
+            args=self._args,
             daemon=True,
+            name=f"stream-{self.job_id[:8]}",
         ).start()
+
+    # ---------- background thread ----------
+    def _set_usage(self, usage):
+        self.usage = usage
 
     def _run(self, api, content, temp, max_t, system_prompt, effort):
         gen = api.send_message_stream(content, self.model, temp, max_t,
-                                      self.history, system_prompt, effort)
+                                      self.history, system_prompt, effort,
+                                      on_usage=self._set_usage)
+        last_flush = 0.0
         try:
             for chunk in gen:
                 if self._cancel.is_set():
                     break
                 with self._lock:
                     self._parts.append(chunk)
+                now = time.time()
+                if now - last_flush >= PARTIAL_FLUSH_SECONDS:
+                    self._flush_partial()
+                    last_flush = now
         except Exception as e:
             logger.error(f"❌ StreamJob error: {type(e).__name__}: {e}")
             with self._lock:
                 self._parts.append(f"\n\n❌ Unexpected error: {e}")
         finally:
-            gen.close()  # closes the HTTP stream if we stopped early
-            self.usage = api.last_usage
-            self.finished_at = time.time()
+            try:
+                gen.close()  # closes the HTTP stream if we stopped early
+            except Exception:
+                pass
+            if self.finished_at is None:
+                self.finished_at = time.time()
+            self._commit()   # no-op if already committed (Stop / discard)
             self._done.set()
 
+    def _flush_partial(self):
+        with self._commit_lock:
+            if self.committed:
+                return
+            try:
+                self.store.write_partial(self.job_id, {
+                    "job_id": self.job_id,
+                    "chat_id": self.chat_id,
+                    "model": self.model,
+                    "started_at": self.started_at,
+                    "updated": _now_iso(),
+                    "text": self.text(),
+                })
+            except Exception as e:
+                logger.warning(f"⚠️ Could not flush partial text: {e}")
+
+    def _build_assistant_message(self, data):
+        resp = self.text()
+        if self._cancel.is_set():
+            resp += "\n\n⏹️ *Generation stopped by user.*"
+        if not resp.strip():
+            resp = "⚠️ Empty response from the API."
+
+        if self.usage:
+            input_tokens = self.usage["input_tokens"]
+            output_tokens = self.usage["output_tokens"]
+            source_note = "real API tokens"
+        else:
+            input_tokens = self.input_tokens_est
+            output_tokens = estimate_tokens(resp)
+            source_note = "estimated tokens"
+
+        self.cost = ClaudeAPI.estimate_cost(self.model, input_tokens, output_tokens)
+        data["cost"] = float(data.get("cost") or 0.0) + self.cost
+        meta = (
+            f"⏱️ Total time: {self.elapsed:.1f}s | "
+            f"🔤 {input_tokens:,} in + {output_tokens:,} out ({source_note}) | "
+            f"💲 Estimated cost: ${self.cost:.6f} "
+            f"(conversation: ${data['cost']:.6f})"
+        )
+        logger.info(f"✅ Response committed | {self.elapsed:.1f}s | model={self.model} | "
+                    f"tokens: {input_tokens}+{output_tokens} | cost: ${self.cost:.6f}")
+        return {"role": "assistant", "content": resp, "meta": meta,
+                "model": self.model, "created": _now_iso()}
+
+    def _commit(self):
+        """Writes the answer into the conversation file. Idempotent; may be called
+        from the background thread (normal end) or the main thread (Stop/discard).
+        Makes no st.* calls."""
+        with self._commit_lock:
+            if self.committed:
+                return
+            self.committed = True
+            if self.finished_at is None:
+                self.finished_at = time.time()
+            try:
+                with self.store.lock(self.chat_id):
+                    data = self.store.load(self.chat_id)
+                    pending = data.get("pending") or {}
+                    if pending.get("job_id") == self.job_id:
+                        if not self._discard:
+                            data["messages"].append(self._build_assistant_message(data))
+                        data["pending"] = None
+                        self.store.save(self.chat_id, data)
+                    else:
+                        logger.info(f"🗑️ Job {self.job_id[:8]} discarded "
+                                    f"(conversation cleared or deleted)")
+                    self.store.delete_partial(self.job_id)
+                    self.registry.remove(self.job_id)
+            except Exception as e:
+                self.commit_error = f"{type(e).__name__}: {e}"
+                logger.exception(f"❌ Could not commit job {self.job_id[:8]} to disk")
+                self.registry.remove(self.job_id)
+
+    # ---------- public API ----------
     def text(self):
         with self._lock:
             return "".join(self._parts)
 
-    def cancel(self):
+    def cancel(self, discard=False):
+        """Stop: commits what was generated so far (or nothing, if discard=True)."""
+        if discard:
+            self._discard = True
         self._cancel.set()
+        self._commit()
 
     @property
     def cancelled(self):
@@ -696,59 +1158,125 @@ class StreamJob:
 
     @property
     def finished(self):
-        return self._done.is_set() or self._cancel.is_set()
+        return self._done.is_set() or self.committed
 
     @property
     def elapsed(self):
         return (self.finished_at or time.time()) - self.started_at
 
 
-def cancel_active_job():
-    job = st.session_state.get("job")
-    if job is not None:
-        job.cancel()
+def load_chat_with_recovery(chat_id):
+    """
+    Loads a conversation from disk. Returns (data, live_job).
+
+    If the file says a generation is pending but no live job exists in this
+    process (server restarted / crashed), the partial text saved on disk is
+    turned into an assistant message, so nothing is silently lost.
+    The check runs under the chat lock, the same lock used by job commits.
+    """
+    with STORE.lock(chat_id):
+        data = STORE.load(chat_id)
+        pending = data.get("pending")
+        if not pending:
+            return data, None
+
+        job_id = pending.get("job_id") if isinstance(pending, dict) else None
+        job = JOBS.get(job_id)
+        if job is not None:
+            return data, job
+
+        # Orphan pending job -> recover partial text
+        partial = STORE.read_partial(job_id) or {}
+        text = partial.get("text", "") or ""
+        note = ("⚠️ *Generation was interrupted before the answer could be saved "
+                "(server restart, crash or storage error).*")
+        if text.strip():
+            content = f"{text}\n\n{note}\n*Partial answer recovered from disk.*"
+        else:
+            content = note
+        data["messages"].append({
+            "role": "assistant",
+            "content": content,
+            "meta": (f"♻️ Recovered after interruption | model: {pending.get('model', '?')} | "
+                     f"started: {pending.get('started_at', '?')} | "
+                     f"{len(text):,} chars saved | cost not tracked"),
+            "created": _now_iso(),
+        })
+        data["pending"] = None
+        try:
+            STORE.save(chat_id, data)
+            STORE.delete_partial(job_id)
+        except Exception as e:
+            logger.error(f"❌ Could not save recovered chat {chat_id}: {e}")
+        logger.warning(f"♻️ Recovered interrupted job {str(job_id)[:8]} in chat {chat_id} "
+                       f"({len(text)} chars)")
+        return data, None
+
+
+def open_chat(chat_id):
+    """Switches the session to `chat_id`. Must run BEFORE widgets are created
+    (it may set the model selector). Never cancels a running job: a detached
+    job keeps running and saves its answer to its own conversation."""
     st.session_state.job = None
+    data, live_job = load_chat_with_recovery(chat_id)
+    st.session_state.chat_id = chat_id
+    st.session_state.msgs = data["messages"]
+    st.session_state.session_cost = float(data.get("cost") or 0.0)
+    if live_job is not None:
+        st.session_state.job = live_job  # re-attach to the still-running generation
+
+    if STORE.exists(chat_id):
+        saved_model = data.get("model")
+        if saved_model in ClaudeAPI.MODELS:
+            st.session_state.selected_model = saved_model
+            st.session_state.model_selector = saved_model
+
+    try:
+        st.query_params["chat"] = chat_id
+    except Exception as e:
+        logger.debug(f"Could not set query param: {e}")
+    logger.info(f"📂 Chat opened: {chat_id} | {len(data['messages'])} messages | "
+                f"live job: {live_job is not None}")
 
 
-def commit_job(job):
-    """Moves the finished answer into the chat history.
-    Idempotent, and makes no st.* display calls (a rerun can't interrupt it)."""
-    if job.committed:
+def reload_current_chat():
+    """Re-reads the current conversation from disk (source of truth)."""
+    chat_id = st.session_state.get("chat_id")
+    if not chat_id:
         return
-    resp = job.text()
-    if job.cancelled:
-        resp += "\n\n⏹️ *Generation stopped by user.*"
-    if not resp.strip():
-        resp = "⚠️ Empty response from the API."
+    data, live_job = load_chat_with_recovery(chat_id)
+    st.session_state.msgs = data["messages"]
+    st.session_state.session_cost = float(data.get("cost") or 0.0)
+    if live_job is not None and live_job is not st.session_state.get("job"):
+        st.session_state.job = live_job
 
-    if job.usage:
-        input_tokens = job.usage["input_tokens"]
-        output_tokens = job.usage["output_tokens"]
-        source_note = "real API tokens"
-    else:
-        input_tokens = estimate_tokens(job.prompt_text) + sum(
-            estimate_tokens(m["content"]) for m in job.history
-        )
-        output_tokens = estimate_tokens(resp)
-        source_note = "estimated tokens"
 
-    cost = ClaudeAPI.estimate_cost(job.model, input_tokens, output_tokens)
-    job.committed = True
-    st.session_state.session_cost += cost
-    meta = (
-        f"⏱️ Total time: {job.elapsed:.1f}s | "
-        f"🔤 {input_tokens:,} in + {output_tokens:,} out ({source_note}) | "
-        f"💲 Estimated cost: ${cost:.6f} "
-        f"(session: ${st.session_state.session_cost:.6f})"
-    )
-    st.session_state.msgs.append({"role": "assistant", "content": resp, "meta": meta})
-    logger.info(f"✅ Response committed | {job.elapsed:.1f}s | model={job.model} | "
-                f"tokens: {input_tokens}+{output_tokens} | cost: ${cost:.6f}")
+def discard_jobs_for_chat(chat_id):
+    """Cancels running jobs of a chat WITHOUT saving their answers (Clear/Delete)."""
+    current = st.session_state.get("job")
+    if current is not None and current.chat_id == chat_id:
+        current.cancel(discard=True)
+        st.session_state.job = None
+    for job in JOBS.for_chat(chat_id):
+        job.cancel(discard=True)
+
+
+def delete_chat(chat_id):
+    discard_jobs_for_chat(chat_id)
+    STORE.delete(chat_id)
+
+
+def resolve_initial_chat_id():
+    """URL ?chat=<id> first, then the most recently updated chat, else a new one."""
+    qp = st.query_params.get("chat")
+    if is_valid_chat_id(qp):
+        return qp
+    return STORE.most_recent() or new_chat_id()
 
 
 def render_active_job(slot, live=True):
-    """Shows the in-progress answer. Safe to be interrupted by a rerun:
-    the next run simply calls it again and resumes from the job's buffer."""
+    """Shows the in-progress answer. Safe to be interrupted by a rerun or by the
+    session being destroyed: the job keeps running and saves to disk on its own."""
     job = st.session_state.get("job")
     if job is None:
         return
@@ -766,12 +1294,16 @@ def render_active_job(slot, live=True):
                     placeholder.markdown(text + "▌")
                     last_len = len(text)
                 phase = "Generating" if text else "Thinking"
-                status.caption(f"⏳ {phase}… {job.elapsed:.0f}s | {len(text):,} chars")
+                status.caption(f"⏳ {phase}… {job.elapsed:.0f}s | {len(text):,} chars | "
+                               f"💾 auto-saved to disk")
                 # Throttle: the longer the text, the fewer full re-sends
                 time.sleep(min(2.0, 0.25 + len(text) / 100_000))
 
-    commit_job(job)
     st.session_state.job = None
+    if job.chat_id == st.session_state.get("chat_id"):
+        reload_current_chat()  # the answer was committed to disk by the job
+        if st.session_state.get("job") is job:
+            st.session_state.job = None
     st.rerun()
 
 # ============ INITIALIZE SESSION STATE ============
@@ -789,12 +1321,30 @@ if 'system_prompt' not in st.session_state:
     st.session_state.system_prompt = "You are a helpful and accurate assistant."
 if 'enable_mermaid' not in st.session_state:
     st.session_state.enable_mermaid = True
-if 'saved_conversations' not in st.session_state:
-    st.session_state.saved_conversations = {}
 if 'session_cost' not in st.session_state:
     st.session_state.session_cost = 0.0
 if 'job' not in st.session_state:
     st.session_state.job = None
+if 'keep_attachments' not in st.session_state:
+    st.session_state.keep_attachments = True
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
+
+# ============ CONVERSATION SELECTION (must run BEFORE any widget) ============
+_pending_open = st.session_state.pop("pending_open", None)
+if _pending_open == "__new__":
+    open_chat(new_chat_id())
+elif _pending_open == "__latest__":
+    open_chat(STORE.most_recent() or new_chat_id())
+elif _pending_open and is_valid_chat_id(_pending_open):
+    open_chat(_pending_open)
+elif "chat_id" not in st.session_state:
+    open_chat(resolve_initial_chat_id())
+else:
+    # URL changed (e.g. user pasted another ?chat=<id>)
+    _qp_chat = st.query_params.get("chat")
+    if is_valid_chat_id(_qp_chat) and _qp_chat != st.session_state.chat_id:
+        open_chat(_qp_chat)
 
 # Guard: a legacy model id left in session state would break the selectbox
 if st.session_state.selected_model not in ClaudeAPI.MODELS:
@@ -940,6 +1490,14 @@ with st.sidebar:
                                  help="When enabled, renders Mermaid diagrams visually. When disabled, shows the source code.")
     st.session_state.enable_mermaid = enable_mermaid
 
+    st.checkbox(
+        "📎 Keep attachments in context",
+        key="keep_attachments",
+        help="When enabled, files/images attached earlier in this conversation are re-sent "
+             "with every follow-up question, so the model can still 'see' them. "
+             "Disable to save tokens (only the typed text of earlier messages is sent).",
+    )
+
     # System Prompt Customization
     with st.expander("📝 System Prompt"):
         st.session_state.system_prompt = st.text_area(
@@ -948,19 +1506,59 @@ with st.sidebar:
             height=100
         )
 
-    # Saved Conversations
-    with st.expander("💾 Saved Conversations"):
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Save Current", use_container_width=True):
-                save_conversation()
+    # Conversations (auto-saved to disk)
+    with st.expander("💬 Conversations"):
+        current_id = st.session_state.chat_id
+        st.caption(f"💾 Auto-saved to disk · current: `{current_id}`")
 
-        saved_chats = list_saved_conversations()
-        if saved_chats:
-            selected_chat = st.selectbox("Load conversation:", saved_chats)
+        if st.button("🆕 New chat", use_container_width=True):
+            st.session_state.pending_open = "__new__"
+            st.rerun()
+
+        chats = STORE.list_chats()
+        if chats:
+            labels = {
+                c["id"]: (
+                    f"{'▶ ' if c['id'] == current_id else ''}"
+                    f"{'⏳ ' if c.get('pending') else ''}"
+                    f"{c.get('title', '(untitled)')} · "
+                    f"{str(c.get('updated', ''))[:16].replace('T', ' ')}"
+                )
+                for c in chats
+            }
+            chat_ids = list(labels.keys())
+            selected_chat = st.selectbox(
+                "Open conversation:",
+                chat_ids,
+                index=chat_ids.index(current_id) if current_id in chat_ids else 0,
+                format_func=lambda i: labels.get(i, i),
+            )
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("📂 Open", use_container_width=True,
+                             disabled=(selected_chat == current_id)):
+                    st.session_state.pending_open = selected_chat
+                    st.rerun()
             with col2:
-                if st.button("Load", use_container_width=True):
-                    load_conversation(selected_chat)
+                if st.button("🗑️ Delete", use_container_width=True):
+                    st.session_state.delete_armed = selected_chat
+
+            if st.session_state.get("delete_armed") == selected_chat:
+                st.warning("Delete this conversation permanently?")
+                d1, d2 = st.columns(2)
+                with d1:
+                    if st.button("✅ Yes, delete", use_container_width=True):
+                        delete_chat(selected_chat)
+                        st.session_state.pop("delete_armed", None)
+                        if selected_chat == current_id:
+                            st.session_state.pending_open = "__latest__"
+                        st.rerun()
+                with d2:
+                    if st.button("✖️ Cancel", use_container_width=True):
+                        st.session_state.pop("delete_armed", None)
+                        st.rerun()
+        else:
+            st.caption("No saved conversations yet.")
 
     # Export Options
     with st.expander("📥 Export Conversation"):
@@ -983,13 +1581,13 @@ with st.sidebar:
     with st.expander("📊 Statistics"):
         if st.session_state.msgs:
             total_msgs = len(st.session_state.msgs)
-            total_tokens = sum(estimate_tokens(m['content']) for m in st.session_state.msgs)
+            total_tokens = sum(message_context_tokens(m) for m in st.session_state.msgs)
 
             col1, col2 = st.columns(2)
             col1.metric("Messages", total_msgs)
-            col2.metric("Tokens", f"{total_tokens:,}")
+            col2.metric("Context tokens", f"{total_tokens:,}")
 
-            st.metric("Session cost (est.)", f"${st.session_state.session_cost:.6f}")
+            st.metric("Conversation cost (est.)", f"${st.session_state.session_cost:.6f}")
 
             if total_msgs > 0:
                 df = create_usage_dataframe(st.session_state.msgs)
@@ -1002,7 +1600,10 @@ with st.sidebar:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("🗑️ Clear", use_container_width=True):
-            cancel_active_job()
+            chat_id = st.session_state.chat_id
+            discard_jobs_for_chat(chat_id)
+            if STORE.exists(chat_id):
+                STORE.update(chat_id, lambda d: d.update(messages=[], cost=0.0, pending=None))
             st.session_state.msgs = []
             st.session_state.session_cost = 0.0
             st.rerun()
@@ -1020,12 +1621,13 @@ with st.sidebar:
     # Logout and About buttons
     st.divider()
     if st.button("🚪 Logout", use_container_width=True):
-        cancel_active_job()
+        # Detach only: a running generation still finishes and is saved to disk
+        st.session_state.job = None
         cookie_manager = get_cookie_manager()
         cookie_manager.delete(COOKIE_NAME, key="delete_auth_cookie_logout")
         st.session_state.authenticated = False
-        st.session_state.msgs = []
-        st.session_state.session_cost = 0.0
+        for _k in ("chat_id", "msgs", "session_cost"):
+            st.session_state.pop(_k, None)
         st.rerun()
 
     if st.button("ℹ️ About", use_container_width=True):
@@ -1034,7 +1636,8 @@ with st.sidebar:
             f"Default model: `{DEFAULT_MODEL}`\n\n"
             f"Active model: `{st.session_state.selected_model}`\n\n"
             f"Price: `${ClaudeAPI.get_price(st.session_state.selected_model)}/MTok`\n\n"
-            f"Temperature: `disabled (unsupported by API)`"
+            f"Temperature: `disabled (unsupported by API)`\n\n"
+            f"Storage: `{STORE.root}`"
         )
 
 # ============ MAIN CHAT INTERFACE ============
@@ -1059,11 +1662,15 @@ for idx, m in enumerate(st.session_state.msgs):
 # so the uploader and chat input below are rendered before the polling loop.
 job_slot = st.container()
 
-# File uploader with extended support
+# File uploader with extended support.
+# The key changes after each send, which clears the uploader: files already sent
+# live in the conversation history, so they must not be attached again.
 files = st.file_uploader(
     "📎 Attach files",
     accept_multiple_files=True,
-    type=['png','jpg','jpeg','txt','py','csv','md','json','cfg','php','sql','pdf','js','html','css','xml','yml','yaml','xlsx','docx','ipynb','zip']
+    type=['png','jpg','jpeg','txt','py','csv','md','json','cfg','php','sql','pdf','js','html','css','xml','yml','yaml','xlsx','docx','ipynb','zip'],
+    key=f"uploader_{st.session_state.uploader_key}",
+    help="Attachments are saved with the message and kept in context for follow-up questions.",
 )
 
 job_active = st.session_state.job is not None
@@ -1074,6 +1681,7 @@ if prompt := st.chat_input(
     disabled=job_active,
 ):
     logger.info(f"📝 User input received | Length: {len(prompt)}")
+    chat_id = st.session_state.chat_id
 
     if template_prompt:
         full_prompt = f"{template_prompt}\n\n{prompt}"
@@ -1105,23 +1713,44 @@ if prompt := st.chat_input(
         except Exception as e:
             logger.error(f"❌ /model command error: {e}")
             resp = f"❌ Error checking model: {e}"
-        st.session_state.msgs.append({"role": "user", "content": display_prompt})
-        st.session_state.msgs.append({"role": "assistant", "content": resp})
+
+        _user_msg = {"role": "user", "content": display_prompt,
+                     "prompt_text": sanitize_input(full_prompt), "created": _now_iso()}
+        _assistant_msg = {"role": "assistant", "content": resp, "created": _now_iso()}
+        try:
+            _data = STORE.update(chat_id, lambda d: d["messages"].extend([_user_msg, _assistant_msg]))
+            st.session_state.msgs = _data["messages"]
+        except Exception as e:
+            logger.error(f"❌ Could not save /model exchange: {e}")
+            st.session_state.msgs.extend([_user_msg, _assistant_msg])
         st.rerun()
 
-    # History = everything BEFORE this new user message (role + content only)
-    history = [{"role": m["role"], "content": m["content"]} for m in st.session_state.msgs]
+    # History = everything BEFORE this new user message, WITH earlier attachments
+    history = build_api_history(st.session_state.msgs, st.session_state.keep_attachments)
 
     # Files are read here, in the main thread (the background thread must not touch st.*)
-    content, file_errors = st.session_state.api.build_user_content(full_prompt, files)
+    content, attached_names, file_errors = st.session_state.api.build_user_content(full_prompt, files)
     if file_errors:
         display_prompt += "\n\n" + "\n".join(f"⚠️ Could not process file {e}" for e in file_errors)
 
-    st.session_state.msgs.append({"role": "user", "content": display_prompt})
+    user_msg = {
+        "role": "user",
+        "content": display_prompt,                 # what is shown in the UI
+        "prompt_text": sanitize_input(full_prompt),  # real prompt (template included)
+        "created": _now_iso(),
+    }
+    if attached_names:
+        user_msg["api_content"] = content          # full blocks: text + images + file contents
+        user_msg["attachments"] = attached_names
 
-    logger.info(f"💬 Starting job | Model: {model} | Streaming: {use_streaming} | "
-                f"Files: {len(files or [])} | Template: {template or 'None'}")
-    st.session_state.job = StreamJob(
+    input_tokens_est = estimate_content_tokens(content) + sum(
+        estimate_content_tokens(h["content"]) for h in history
+    )
+
+    job = StreamJob(
+        store=STORE,
+        registry=JOBS,
+        chat_id=chat_id,
         api=st.session_state.api,
         content=content,
         model=model,
@@ -1130,8 +1759,32 @@ if prompt := st.chat_input(
         history=history,
         system_prompt=st.session_state.system_prompt,
         effort=effort,
-        prompt_text=full_prompt,
+        input_tokens_est=input_tokens_est,
     )
+
+    def _start_pending(d):
+        d["messages"].append(user_msg)
+        d["model"] = model
+        d["pending"] = {"job_id": job.job_id, "model": model, "started_at": _now_iso()}
+
+    # Register BEFORE marking the chat as pending on disk, so another session
+    # opening this chat never mistakes the job for an orphan.
+    JOBS.add(job)
+    try:
+        data = STORE.update(chat_id, _start_pending)
+    except Exception as e:
+        JOBS.remove(job.job_id)
+        logger.exception("❌ Could not save the user message to disk")
+        st.error(f"❌ Could not save the message to disk: {e}")
+        st.stop()
+
+    st.session_state.msgs = data["messages"]
+    logger.info(f"💬 Starting job {job.job_id[:8]} | Chat: {chat_id} | Model: {model} | "
+                f"Streaming: {use_streaming} | Files: {len(attached_names)} | "
+                f"History msgs: {len(history)} | Template: {template or 'None'}")
+    job.start()
+    st.session_state.job = job
+    st.session_state.uploader_key += 1  # clear the uploader
     st.rerun()
 
 # Must be the LAST thing in the script (it blocks while polling the job)
